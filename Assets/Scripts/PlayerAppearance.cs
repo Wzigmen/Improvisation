@@ -5,11 +5,16 @@ public class PlayerAppearance : MonoBehaviour
 {
     [SerializeField] Renderer[] tinted;
 
+    // Golden-ratio hue steps keep neighbouring ids visually distinct; id 0 (the host) stays orange.
+    public static Color ColorFor(ulong clientId)
+    {
+        float hue = Mathf.Repeat(0.07f + clientId * 0.61803f, 1f);
+        return Color.HSVToRGB(hue, 0.75f, 1f);
+    }
+
     public void SetPlayerColor(ulong clientId)
     {
-        // Golden-ratio hue steps keep neighbouring ids visually distinct; id 0 (the host) stays orange.
-        float hue = Mathf.Repeat(0.07f + clientId * 0.61803f, 1f);
-        Color color = Color.HSVToRGB(hue, 0.75f, 1f);
+        Color color = ColorFor(clientId);
         foreach (var r in tinted)
         {
             if (r != null) r.material.SetColor("_BaseColor", color);

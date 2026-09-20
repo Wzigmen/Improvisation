@@ -1,5 +1,7 @@
 using System;
 using System.Collections;
+using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using Unity.Netcode;
 using Unity.Netcode.Transports.UTP;
@@ -15,6 +17,7 @@ public class NetworkGame : MonoBehaviour
     public static bool IsMultiplayer { get; private set; }
 
     [SerializeField] GameObject playerPrefab;
+    [SerializeField] GameObject matchManagerPrefab;
     [SerializeField] int maxPlayers = 8;
 
     public bool Busy { get; private set; }
@@ -27,6 +30,7 @@ public class NetworkGame : MonoBehaviour
     LanAnnouncer announcer;
     bool leaving;
     string joinAddress;
+    int hostPort = LanProtocol.GamePort;
 
     void Awake()
     {
@@ -82,27 +86,69 @@ public class NetworkGame : MonoBehaviour
         return true;
     }
 
+    // First free UDP port in [first, first + count), or -1. Lets several copies of the game run on one PC
+    // (editor + build) - each host just takes the next port and announces it.
+    static int FindFreeUdpPort(int first, int count)
+    {
+        for (int port = first; port < first + count; port++)
+        {
+            // Netcode binds to one specific address (127.0.0.1 solo, 0.0.0.0 for friends) and Windows treats
+            // "all addresses" and "loopback only" as different bindings, so the port must be free on both.
+            if (CanBind(IPAddress.Loopback, port) && CanBind(IPAddress.Any, port))
+                return port;
+        }
+        return -1;
+    }
+
+    static bool CanBind(IPAddress address, int port)
+    {
+        try
+        {
+            using (new UdpClient(new IPEndPoint(address, port))) { }
+            return true;
+        }
+        catch (SocketException)
+        {
+            return false;
+        }
+    }
+
     void StartHosting(bool forFriends)
     {
         if (Busy || leaving || InGame) return;
+
+        // Friends get the familiar port when it's free; a solo game just needs any free port.
+        int port = forFriends ? FindFreeUdpPort(LanProtocol.GamePort, 10) : FindFreeUdpPort(47800, 50);
+        if (port < 0)
+        {
+            ConnectFailed?.Invoke("Не удалось найти свободный сетевой порт. Закройте лишние копии игры и попробуйте снова.");
+            return;
+        }
+
         Busy = true;
         IsMultiplayer = forFriends;
+        hostPort = port;
 
-        transport.SetConnectionData("127.0.0.1", (ushort)LanProtocol.GamePort, forFriends ? "0.0.0.0" : "127.0.0.1");
+        transport.SetConnectionData("127.0.0.1", (ushort)port, forFriends ? "0.0.0.0" : "127.0.0.1");
 
         if (!networkManager.StartHost())
         {
             networkManager.Shutdown();
             Busy = false;
             IsMultiplayer = false;
-            ConnectFailed?.Invoke($"Не удалось создать игру. Возможно, порт {LanProtocol.GamePort} уже занят другой копией игры.");
+            ConnectFailed?.Invoke($"Не удалось создать игру на порту {port}.");
             return;
         }
+
+        // The host owns the slimes and the match; they appear for everyone who joins.
+        if (MobSpawner.Instance != null) MobSpawner.Instance.OnHostStarted();
+        if (matchManagerPrefab != null)
+            Instantiate(matchManagerPrefab).GetComponent<NetworkObject>().Spawn(true);
 
         if (forFriends)
         {
             announcer.ServerName = "Игра " + Environment.UserName;
-            announcer.GamePort = LanProtocol.GamePort;
+            announcer.GamePort = hostPort;
             announcer.MaxPlayers = maxPlayers;
             announcer.PlayerCount = () => networkManager.ConnectedClientsIds.Count;
             announcer.enabled = true;
@@ -189,6 +235,7 @@ public class NetworkGame : MonoBehaviour
         leaving = true;
         InGame = false;
         announcer.enabled = false;
+        if (MobSpawner.Instance != null) MobSpawner.Instance.StopAll();
         if (PauseMenu.Instance != null) PauseMenu.Instance.ForceClose();
         PauseMenu.SetCursorCaptured(false);
 
@@ -206,7 +253,12 @@ public class NetworkGame : MonoBehaviour
     public string DescribeSession()
     {
         var sb = new StringBuilder();
-        sb.Append("Игроков: ").Append(UnityEngine.Object.FindObjectsByType<PlayerController>().Length);
+        int humans = 0;
+        foreach (var p in UnityEngine.Object.FindObjectsByType<PlayerController>())
+        {
+            if (!p.IsBot) humans++;
+        }
+        sb.Append("Игроков: ").Append(humans);
 
         if (IsMultiplayer && networkManager.IsServer)
         {
@@ -218,6 +270,8 @@ public class NetworkGame : MonoBehaviour
                 {
                     if (i > 0) sb.Append(",  ");
                     sb.Append(addresses[i].Address);
+                    // Friends must type the port too when it isn't the default one.
+                    if (hostPort != LanProtocol.GamePort) sb.Append(':').Append(hostPort);
                 }
             }
         }

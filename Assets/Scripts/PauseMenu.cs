@@ -1,3 +1,4 @@
+using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.InputSystem;
 using UnityEngine.EventSystems;
@@ -10,8 +11,13 @@ public class PauseMenu : MonoBehaviour
     public static bool IsPaused { get; private set; }
     public static PauseMenu Instance { get; private set; }
 
+    // Set by other menus (the ready check) that need the mouse: the cursor stays free while true.
+    public static bool UiWantsCursor;
+
     GameObject menuRoot;
     Button resumeButton;
+    Button endMatchButton;
+    bool altFree;
     Text infoLabel;
     InputAction pauseAction;
 
@@ -45,8 +51,27 @@ public class PauseMenu : MonoBehaviour
 
     void Update()
     {
-        // Clicking back into the game window re-captures the cursor.
-        if (NetworkGame.InGame && !IsPaused && Cursor.lockState != CursorLockMode.Locked &&
+        if (!NetworkGame.InGame || IsPaused)
+        {
+            altFree = false;
+            return;
+        }
+
+        // Holding Alt frees the cursor so on-screen buttons (like "Play") can be clicked without pausing.
+        bool alt = Keyboard.current != null && Keyboard.current.leftAltKey.isPressed;
+        if (alt && !altFree && Cursor.lockState == CursorLockMode.Locked)
+        {
+            altFree = true;
+            SetCursorCaptured(false);
+        }
+        else if (!alt && altFree)
+        {
+            altFree = false;
+            if (!UiWantsCursor) SetCursorCaptured(true);
+        }
+
+        // Clicking back into the game window re-captures the cursor, unless a menu needs the mouse.
+        if (!UiWantsCursor && !altFree && Cursor.lockState != CursorLockMode.Locked &&
             Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
         {
             SetCursorCaptured(true);
@@ -65,6 +90,12 @@ public class PauseMenu : MonoBehaviour
         IsPaused = true;
         Time.timeScale = NetworkGame.IsMultiplayer ? 1f : 0f;
         infoLabel.text = NetworkGame.Instance != null && NetworkGame.IsMultiplayer ? NetworkGame.Instance.DescribeSession() : "";
+
+        // The host can call a fight off (this is also how a solo training session ends).
+        var match = MatchManager.Instance;
+        bool isHost = NetworkManager.Singleton != null && NetworkManager.Singleton.IsServer;
+        endMatchButton.gameObject.SetActive(isHost && match != null && match.CurrentPhase != MatchManager.Phase.Lobby);
+
         menuRoot.SetActive(true);
         SetCursorCaptured(false);
         EventSystem.current.SetSelectedGameObject(resumeButton.gameObject);
@@ -84,6 +115,12 @@ public class PauseMenu : MonoBehaviour
         IsPaused = false;
         Time.timeScale = 1f;
         menuRoot.SetActive(false);
+    }
+
+    void EndMatch()
+    {
+        if (MatchManager.Instance != null) MatchManager.Instance.EndMatchRpc();
+        Resume();
     }
 
     void ToMainMenu()
@@ -112,11 +149,13 @@ public class PauseMenu : MonoBehaviour
         menuRoot = canvas.gameObject;
 
         UIKit.AddDim(canvas.transform, 0.55f);
-        var panel = UIKit.AddPanel(canvas.transform, "Panel", new Vector2(640f, 560f));
+        var panel = UIKit.AddPanel(canvas.transform, "Panel", new Vector2(640f, 680f));
 
         UIKit.AddLabel(panel, "ПАУЗА", 64, FontStyle.Bold, Color.white, 100f);
         infoLabel = UIKit.AddLabel(panel, "", 26, FontStyle.Normal, new Color(1f, 1f, 1f, 0.7f), 40f);
         resumeButton = UIKit.AddButton(panel, "Продолжить", UIKit.Green, Resume);
+        endMatchButton = UIKit.AddButton(panel, "Завершить бой", new Color(0.85f, 0.55f, 0.2f), EndMatch);
+        endMatchButton.gameObject.SetActive(false); // only shown to the host during a match
         UIKit.AddButton(panel, "В главное меню", UIKit.Blue, ToMainMenu);
         UIKit.AddButton(panel, "Выйти из игры", UIKit.Red, Quit);
     }

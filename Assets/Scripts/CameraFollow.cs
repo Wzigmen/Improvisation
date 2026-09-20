@@ -6,7 +6,7 @@ using UnityEngine.InputSystem;
 public class CameraFollow : MonoBehaviour
 {
     [SerializeField] Transform target;
-    [SerializeField] float distance = 7f;
+    [SerializeField] float distance = 9.5f;
     [SerializeField] float pivotHeight = 1.4f;
     [SerializeField] float mouseSensitivity = 0.12f;
     [SerializeField] float stickSensitivity = 140f;
@@ -21,6 +21,7 @@ public class CameraFollow : MonoBehaviour
 
     float yaw;
     float pitch = 20f;
+    float shake;
     Vector3 pivot;
     Vector3 pivotVelocity;
     InputAction mouseLook;
@@ -81,7 +82,16 @@ public class CameraFollow : MonoBehaviour
         Vector3 desiredPivot = target.position + Vector3.up * pivotHeight;
         pivot = Vector3.SmoothDamp(pivot, desiredPivot, ref pivotVelocity, followSmoothTime);
         Place(distance);
+
+        // A short rumble when a punch lands or connects.
+        if (shake > 0.001f)
+        {
+            transform.position += Random.insideUnitSphere * shake;
+            shake = Mathf.MoveTowards(shake, 0f, 0.9f * Time.unscaledDeltaTime);
+        }
     }
+
+    public void Shake(float amount) => shake = Mathf.Max(shake, Mathf.Min(amount, 0.35f));
 
     void Place(float dist)
     {
@@ -89,7 +99,11 @@ public class CameraFollow : MonoBehaviour
         Vector3 back = rotation * Vector3.back;
 
         // Pull the camera in when something (ground, house) is between it and the character.
-        if (Physics.SphereCast(pivot, collisionRadius, back, out RaycastHit hit, dist, ~0, QueryTriggerInteraction.Ignore))
+        // The fence, stands and their steps sit on the "Ignore Raycast" layer so the camera passes through them
+        // instead of being shoved into the character's back.
+        const int ignoreRaycastLayer = 2;
+        int mask = ~(1 << ignoreRaycastLayer);
+        if (Physics.SphereCast(pivot, collisionRadius, back, out RaycastHit hit, dist, mask, QueryTriggerInteraction.Ignore))
             dist = Mathf.Max(hit.distance, 0.5f);
 
         transform.SetPositionAndRotation(pivot + back * dist, rotation);
