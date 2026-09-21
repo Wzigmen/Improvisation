@@ -27,25 +27,29 @@ public static class CartoonPlayerBuilder
         // Rebuild from scratch so the menu item is safe to run more than once.
         // ("House" is listed only to clear it out of scenes built before it was replaced by the color zone.)
         foreach (var name in new[] { "Player", "Ground", "House", "PunchingBagRig", "ColorZone", "BotZone", "Arena", "RingArena", "RingFloorRoot", "RingFence",
+                                     "ScreenStart", "ScreenRing", "FittingRoom",
                                      "PauseMenu", "MainMenu", "MatchUI", "AbilityUI", "NetworkGame", "HitEffects", "MobSpawner" })
             RemoveExisting(name);
 
         Material groundMat = MakeMaterial("Ground", new Color(0.45f, 0.75f, 0.4f));
 
-        // Ground: 80 x 80 m. The fence encloses the middle 60 x 60; the stands stand on the rest.
+        // Ground: 110 x 110 m. The fence encloses the middle 60 x 60, the stands stand on the rest and the blue
+        // screen closes the edge (see BuildScreens), so the world never seems to end in an endless horizon.
         var ground = GameObject.CreatePrimitive(PrimitiveType.Plane);
         ground.name = "Ground";
-        ground.transform.localScale = new Vector3(8f, 1f, 8f);
+        ground.transform.localScale = new Vector3(11f, 1f, 11f);
         ground.GetComponent<Renderer>().sharedMaterial = groundMat;
         Undo.RegisterCreatedObjectUndo(ground, "Create Ground");
 
         GameObject playerPrefab = BuildPlayerPrefab();
         GameObject mobPrefab = BuildMobPrefab();
         BuildPunchingBag(BagAnchor);
+        BuildFittingRoom(BagAnchor + new Vector3(9.5f, 0f, 0f));   // a bit further right of the bag
         BuildColorZone(ZoneCenter, "ColorZone", null, MatchMode.Players);
         BuildColorZone(BotZoneCenter, "BotZone", "ИГРАТЬ\nС БОТОМ", MatchMode.Bots);
         BuildStartField();
         BuildRing();
+        BuildScreens();
         BuildEffectsAndSpawner(mobPrefab);
         BuildNetworkObjects(playerPrefab, BuildMatchManagerPrefab(BuildBotPrefab()));
 
@@ -103,6 +107,13 @@ public static class CartoonPlayerBuilder
 
         player.AddComponent<HitFlash>();
         player.AddComponent<HealthBar>();
+        player.AddComponent<NameTag>();   // the nickname above the head, in the character's colour
+
+        // Hats, eyes, mouths, gloves, clothes and shoes chosen in the fitting room are built in code from this material.
+        var style = player.AddComponent<CharacterStyle>();
+        var styleSo = new SerializedObject(style);
+        styleSo.FindProperty("baseMaterial").objectReferenceValue = MakeMaterial("StyleBase", Color.white);
+        styleSo.ApplyModifiedPropertiesWithoutUndo();
 
         // The five ability cards (input + host-side effects) and what they look like on the character.
         player.AddComponent<PlayerAbilities>();
@@ -120,8 +131,9 @@ public static class CartoonPlayerBuilder
         Transform bodyMesh = Part("BodyMesh", body, new Vector3(0f, 0.75f, 0f), new Vector3(1.3f, 1.2f, 1.2f), bodyMat);
         Part("EyeL", body, new Vector3(-0.2f, 0.9f, 0.5f), Vector3.one * 0.3f, eyeMat);
         Part("EyeR", body, new Vector3(0.2f, 0.9f, 0.5f), Vector3.one * 0.3f, eyeMat);
-        Part("PupilL", body, new Vector3(-0.2f, 0.9f, 0.62f), Vector3.one * 0.14f, pupilMat);
-        Part("PupilR", body, new Vector3(0.2f, 0.9f, 0.62f), Vector3.one * 0.14f, pupilMat);
+        Part("PupilL", body, new Vector3(-0.19f, 0.88f, 0.62f), Vector3.one * 0.14f, pupilMat);
+        Part("PupilR", body, new Vector3(0.19f, 0.88f, 0.62f), Vector3.one * 0.14f, pupilMat);
+        BuildAngryFace(body, pupilMat);
 
         Transform footL = Part("FootL", model, new Vector3(-0.28f, 0.13f, 0.05f), new Vector3(0.4f, 0.26f, 0.55f), footMat);
         Transform footR = Part("FootR", model, new Vector3(0.28f, 0.13f, 0.05f), new Vector3(0.4f, 0.26f, 0.55f), footMat);
@@ -152,6 +164,129 @@ public static class CartoonPlayerBuilder
         appearanceSo.ApplyModifiedPropertiesWithoutUndo();
 
         return SavePrefab(player, path);
+    }
+
+    // The fitting room: a closed booth (walls, roof, a mirror at the back) with a curtain in front that slides open for
+    // whoever walks up to it. Stepping onto the pink pad at the back opens the customization screen (FittingRoom).
+    // `c` is the middle of the booth on the ground; the curtain side faces -Z, towards where players spawn.
+    static void BuildFittingRoom(Vector3 c)
+    {
+        const float W = 4.4f, D = 4.6f, H = 3.1f, T = 0.14f;   // inside width, depth, height, wall thickness
+        float frontZ = c.z - D / 2f, backZ = c.z + D / 2f;
+
+        Material wallMat = MakeMaterial("FittingWall", new Color(0.78f, 0.66f, 0.95f));
+        Material trimMat = MakeMaterial("FittingTrim", new Color(0.4f, 0.25f, 0.55f));
+        Material roofMat = MakeMaterial("FittingRoof", new Color(0.55f, 0.35f, 0.75f));
+        Material curtainMat = MakeMaterial("FittingCurtain", new Color(0.88f, 0.25f, 0.55f));
+        Material rugMat = MakeMaterial("FittingRug", new Color(0.98f, 0.85f, 0.92f));
+        Material padMat = MakeMaterial("FittingPad", new Color(1f, 0.62f, 0.85f), "Universal Render Pipeline/Unlit");
+        Material mirrorMat = MakeMaterial("FittingMirror", new Color(0.78f, 0.92f, 1f), "Universal Render Pipeline/Unlit");
+        Material goldMat = MakeMaterial("FittingGold", new Color(0.95f, 0.75f, 0.25f));
+
+        var root = new GameObject("FittingRoom");
+        Transform t = root.transform;
+
+        // Solid walls (the camera passes through them like through the fences) and a roof. The roof casts no
+        // shadow, so the sunlight still reaches the inside.
+        Box("WallBack", t, new Vector3(c.x, H / 2f, backZ + T / 2f), new Vector3(W + T * 2f, H, T), wallMat, keepCollider: true).gameObject.layer = 2;
+        Box("WallLeft", t, new Vector3(c.x - W / 2f - T / 2f, H / 2f, c.z), new Vector3(T, H, D), wallMat, keepCollider: true).gameObject.layer = 2;
+        Box("WallRight", t, new Vector3(c.x + W / 2f + T / 2f, H / 2f, c.z), new Vector3(T, H, D), wallMat, keepCollider: true).gameObject.layer = 2;
+        Transform roof = Box("Roof", t, new Vector3(c.x, H + T / 2f, c.z), new Vector3(W + T * 2f + 0.4f, T, D + T * 2f + 0.4f), roofMat);
+        roof.GetComponent<Renderer>().shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        Box("FrontHeader", t, new Vector3(c.x, (2.9f + H) / 2f, frontZ), new Vector3(W + T * 2f, H - 2.9f, T), trimMat);
+        Box("CurtainRail", t, new Vector3(c.x, 2.94f, frontZ - 0.07f), new Vector3(W + 0.3f, 0.06f, 0.06f), goldMat);
+
+        // Corner posts (only for looks).
+        foreach (float sx in new[] { -1f, 1f })
+            foreach (float sz in new[] { frontZ, backZ })
+                Box("Post", t, new Vector3(c.x + sx * (W / 2f + T / 2f), H / 2f, sz), new Vector3(0.22f, H + 0.05f, 0.22f), trimMat);
+
+        // The curtain: two halves that overlap in the middle (no colliders: you just walk through the fabric).
+        Transform curtainL = Box("CurtainL", t, new Vector3(c.x - 1.03f, 1.475f, frontZ + 0.02f), new Vector3(2.34f, 2.85f, 0.07f), curtainMat);
+        Transform curtainR = Box("CurtainR", t, new Vector3(c.x + 1.03f, 1.475f, frontZ - 0.02f), new Vector3(2.34f, 2.85f, 0.07f), curtainMat);
+
+        // Inside: a rug, a mirror on the back wall and the pad to stand on.
+        Box("Rug", t, new Vector3(c.x, 0.015f, c.z), new Vector3(W - 0.3f, 0.03f, D - 0.3f), rugMat);
+        Box("MirrorFrame", t, new Vector3(c.x, 1.5f, backZ - 0.01f), new Vector3(2.9f, 2.4f, 0.03f), goldMat);
+        Box("Mirror", t, new Vector3(c.x, 1.5f, backZ - 0.03f), new Vector3(2.6f, 2.1f, 0.02f), mirrorMat);
+
+        Vector3 stand = new Vector3(c.x, 0f, backZ - 0.8f);
+        var pad = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+        pad.name = "Pad";
+        Object.DestroyImmediate(pad.GetComponent<Collider>());
+        pad.GetComponent<Renderer>().sharedMaterial = padMat;
+        pad.transform.SetParent(t, false);
+        pad.transform.position = stand + Vector3.up * 0.035f;
+        pad.transform.localScale = new Vector3(1.7f, 0.006f, 1.7f);
+
+        var lightObject = new GameObject("FittingLight");
+        lightObject.transform.SetParent(t, false);
+        lightObject.transform.position = new Vector3(c.x, 2.7f, c.z);
+        var light = lightObject.AddComponent<Light>();
+        light.type = LightType.Point;
+        light.color = new Color(1f, 0.92f, 0.85f);
+        light.range = 8f;
+        light.intensity = 2.5f;
+        light.shadows = LightShadows.None;
+
+        // Where things happen: the character stands on the pad and faces the camera, which hangs 2.9 m in front of
+        // it (still inside the booth) and looks a little to the left of the character, so the character ends up on
+        // the right of the screen, away from the panel. Far enough back to fit a top hat.
+        Transform standPoint = Marker("StandPoint", t, stand);
+        Vector3 cameraPosition = stand + new Vector3(0f, 1.1f, -3.3f);
+        Transform cameraPoint = Marker("CameraPoint", t, cameraPosition);
+        cameraPoint.rotation = Quaternion.LookRotation(stand + new Vector3(-1.15f, 0.95f, 0f) - cameraPosition);
+        Transform exitPoint = Marker("ExitPoint", t, new Vector3(c.x, 0.1f, frontZ - 2.0f));
+        Transform signAnchor = Marker("SignAnchor", t, new Vector3(c.x, H + 0.95f, c.z));
+
+        var room = root.AddComponent<FittingRoom>();
+        var so = new SerializedObject(room);
+        so.FindProperty("curtainLeft").objectReferenceValue = curtainL;
+        so.FindProperty("curtainRight").objectReferenceValue = curtainR;
+        so.FindProperty("standPoint").objectReferenceValue = standPoint;
+        so.FindProperty("cameraPoint").objectReferenceValue = cameraPoint;
+        so.FindProperty("exitPoint").objectReferenceValue = exitPoint;
+        so.FindProperty("signAnchor").objectReferenceValue = signAnchor;
+        so.FindProperty("doorCenter").vector2Value = new Vector2(c.x, frontZ - 0.35f);
+        so.FindProperty("doorHalfSize").vector2Value = new Vector2(1.6f, 1.3f);
+        // Everything from 0.5 m behind the curtain to the back wall counts as "inside".
+        so.FindProperty("insideCenter").vector2Value = new Vector2(c.x, (frontZ + 0.5f + backZ) / 2f);
+        so.FindProperty("insideHalfSize").vector2Value = new Vector2(W / 2f - 0.1f, (backZ - frontZ - 0.5f) / 2f);
+        so.ApplyModifiedPropertiesWithoutUndo();
+
+        Undo.RegisterCreatedObjectUndo(root, "Create FittingRoom");
+    }
+
+    static Transform Marker(string name, Transform parent, Vector3 position)
+    {
+        var go = new GameObject(name);
+        go.transform.SetParent(parent, false);
+        go.transform.position = position;
+        return go.transform;
+    }
+
+    // Angry eyebrows (low over the middle, high on the outside, pressing down on the eyes) and a smirk: a mouth that
+    // is only raised on one side, with a little dimple at the raised corner. All parts are children of the body,
+    // so they move with it.
+    static void BuildAngryFace(Transform body, Material mat)
+    {
+        // Eyebrows. Rotation = turn the outer end back around the round head, after tilting the inner end down.
+        Tilted("BrowL", body, new Vector3(-0.2f, 1.07f, 0.56f), new Vector3(0.36f, 0.075f, 0.09f), yaw: -20f, tilt: -27f, mat);
+        Tilted("BrowR", body, new Vector3(0.2f, 1.07f, 0.56f), new Vector3(0.36f, 0.075f, 0.09f), yaw: 20f, tilt: 27f, mat);
+
+        // Smirk: a flat left half, a middle that starts to rise and a right corner curled up hard, ending in a dimple.
+        Tilted("SmirkA", body, new Vector3(-0.09f, 0.575f, 0.565f), new Vector3(0.27f, 0.055f, 0.06f), yaw: -12f, tilt: 3f, mat);
+        Tilted("SmirkB", body, new Vector3(0.10f, 0.615f, 0.565f), new Vector3(0.24f, 0.055f, 0.06f), yaw: 8f, tilt: 20f, mat);
+        Tilted("SmirkC", body, new Vector3(0.222f, 0.675f, 0.545f), new Vector3(0.13f, 0.055f, 0.06f), yaw: 15f, tilt: 46f, mat);
+        Tilted("SmirkDimple", body, new Vector3(0.275f, 0.72f, 0.53f), Vector3.one * 0.065f, yaw: 0f, tilt: 0f, mat);
+    }
+
+    // A stretched sphere turned by `yaw` (around Y) after being tilted by `tilt` (around Z).
+    static Transform Tilted(string name, Transform parent, Vector3 localPos, Vector3 localScale, float yaw, float tilt, Material mat)
+    {
+        Transform part = Part(name, parent, localPos, localScale, mat);
+        part.localRotation = Quaternion.Euler(0f, yaw, 0f) * Quaternion.Euler(0f, 0f, tilt);
+        return part;
     }
 
     // A wandering slime: host-controlled, hittable, respawns when knocked out.
@@ -483,6 +618,83 @@ public static class CartoonPlayerBuilder
         Undo.RegisterCreatedObjectUndo(floorRoot, "Create Ring Floor");
 
         BuildFencedArena("RingFence", c, half, false, 20f, ropeMat, postMat, stepMat, seatMat);
+    }
+
+    // Tall light-blue screens round the start field and round the ring. Behind the stands there is nothing but the
+    // sky, so they close the view (and the edge of the ground) on every side.
+    static void BuildScreens()
+    {
+        // Unlit, so every side of the screen has the same colour. A vertical gradient (pale near the ground, a deeper
+        // blue higher up) makes it read as a backdrop instead of melting into the sky.
+        Material screenMat = MakeMaterial("ScreenBlue", Color.white, "Universal Render Pipeline/Unlit");
+        screenMat.SetTexture("_BaseMap", MakeScreenGradient());
+        EditorUtility.SetDirty(screenMat);
+
+        BuildScreen("ScreenStart", Vector3.zero, 50f, 40f, screenMat);                              // the ground reaches 55 m
+        BuildScreen("ScreenRing", GameLayout.RingCenter, 22f, 30f, screenMat);                      // the ring's ground reaches 25 m
+    }
+
+    static Texture2D MakeScreenGradient()
+    {
+        const string path = "Assets/Materials/ScreenGradient.png";
+        const int height = 64;
+        var tex = new Texture2D(4, height, TextureFormat.RGB24, false);
+        for (int y = 0; y < height; y++)
+        {
+            float t = y / (float)(height - 1);   // 0 at the ground, 1 at the top
+            Color c = Color.Lerp(new Color(0.72f, 0.90f, 1f), new Color(0.22f, 0.58f, 0.93f), Mathf.Pow(t, 0.7f));
+            for (int x = 0; x < 4; x++) tex.SetPixel(x, y, c);
+        }
+        System.IO.File.WriteAllBytes(path, tex.EncodeToPNG());
+        Object.DestroyImmediate(tex);
+        AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
+
+        var importer = (TextureImporter)AssetImporter.GetAtPath(path);
+        importer.wrapMode = TextureWrapMode.Clamp;
+        importer.mipmapEnabled = false;
+        importer.SaveAndReimport();
+        return AssetDatabase.LoadAssetAtPath<Texture2D>(path);
+    }
+
+    // Four walls forming a square whose inner faces are `half` metres from the middle. They are solid (nobody can
+    // walk out of the world) and on the "Ignore Raycast" layer like the fences, so the camera passes through them.
+    static void BuildScreen(string name, Vector3 center, float half, float height, Material mat)
+    {
+        const float thickness = 1f;
+        var root = new GameObject(name);
+        Transform t = root.transform;
+
+        // Each wall is a quad facing the middle (so the gradient's "up" is up on every side), with a solid box
+        // behind it. A quad's visible side is -Z, so the yaw turns that side towards the middle.
+        var sides = new[]
+        {
+            (dir: new Vector3(0f, 0f, 1f), yaw: 0f),     // north wall faces south
+            (dir: new Vector3(0f, 0f, -1f), yaw: 180f),  // south wall faces north
+            (dir: new Vector3(1f, 0f, 0f), yaw: 90f),    // east wall faces west
+            (dir: new Vector3(-1f, 0f, 0f), yaw: -90f)   // west wall faces east
+        };
+
+        foreach (var side in sides)
+        {
+            Vector3 middle = center + side.dir * half + Vector3.up * (height / 2f);
+            Quaternion rotation = Quaternion.Euler(0f, side.yaw, 0f);
+
+            var quad = GameObject.CreatePrimitive(PrimitiveType.Quad);
+            quad.name = "Wall";
+            Object.DestroyImmediate(quad.GetComponent<Collider>());
+            quad.GetComponent<Renderer>().sharedMaterial = mat;
+            quad.transform.SetParent(t, false);
+            quad.transform.SetPositionAndRotation(middle, rotation);
+            quad.transform.localScale = new Vector3(half * 2f, height, 1f);
+
+            var solid = new GameObject("WallCollider");
+            solid.layer = 2;
+            solid.transform.SetParent(t, false);
+            solid.transform.SetPositionAndRotation(middle + side.dir * (thickness / 2f), rotation);
+            solid.AddComponent<BoxCollider>().size = new Vector3(half * 2f + thickness * 2f, height, thickness);
+        }
+
+        Undo.RegisterCreatedObjectUndo(root, "Create " + name);
     }
 
     // A square fence around `center` (`half` = half the side length) with stands outside it.

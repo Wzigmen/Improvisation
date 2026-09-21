@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Unity.Collections;
 using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.InputSystem;
@@ -13,6 +14,9 @@ public class PlayerController : NetworkBehaviour
     const byte StateGrounded = 0;
     const byte StateJump = 1;
     const byte StateFlip = 2;
+    const byte StateDash = 3;
+
+    public const float DashCooldown = 3f;   // seconds between two dashes (Ctrl)
 
     [SerializeField] float moveSpeed = 4f;
     [SerializeField] float sprintMultiplier = 1.8f;
@@ -44,11 +48,17 @@ public class PlayerController : NetworkBehaviour
     [SerializeField] float leapJumpSpeed = 10f;      // 2*10/25 = 0.8 s in the air
     [SerializeField] float leapSpeed = 11f;          // ~9 m forward
 
+    [Header("Dash (Ctrl): a very fast hop in the running direction")]
+    [SerializeField] float dashSpeed = 28f;
+    [SerializeField] float dashDuration = 0.28f;
+    [SerializeField] float dashHop = 4f;             // a little jump so it looks like a leap, not a slide
+
     CharacterController controller;
     InputAction moveAction;
     InputAction sprintAction;
     InputAction jumpAction;
     InputAction attackAction;
+    InputAction dashAction;
     float verticalVelocity;
     float sprintFactor = 1f;
     Vector3 lastPosition;
@@ -70,6 +80,11 @@ public class PlayerController : NetworkBehaviour
     bool leaping;
     Vector3 leapDirection;
     float leapStartTime;
+
+    bool dashing;               // owner: a dash is in progress
+    Vector3 dashDirection;
+    float dashStartTime = -10f; // everybody: when the dash animation started
+    float nextDashTime;         // owner
 
     float hitStartTime = -10f;
     Vector3 hitDirection = Vector3.forward;
@@ -99,10 +114,30 @@ public class PlayerController : NetworkBehaviour
     readonly NetworkVariable<int> botNumber = new NetworkVariable<int>(
         0, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
 
+    // The nickname typed in the start menu: the owner writes it once when the character spawns, everybody reads it.
+    readonly NetworkVariable<FixedString64Bytes> nickname = new NetworkVariable<FixedString64Bytes>(
+        default, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Owner);
+    string nicknameText = "";   // the same, cleaned up and kept as a string so it isn't rebuilt every frame
+
+    // How the character is dressed (see CharacterStyle): six choices packed into one number, written by the owner.
+    readonly NetworkVariable<uint> style = new NetworkVariable<uint>(
+        0u, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Owner);
+    // True while the owner is behind the curtain of the fitting room: everybody else doesn't see the character.
+    readonly NetworkVariable<bool> customizing = new NetworkVariable<bool>(
+        false, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Owner);
+
+    public uint StyleValue => style.Value;
+    public bool IsCustomizing => customizing.Value;
+    public void SetStyle(uint value) { if (IsOwner && IsSpawned) style.Value = value; }
+    public void SetCustomizing(bool value) { if (IsOwner && IsSpawned) customizing.Value = value; }
+
+    // Owner: the fitting-room screen holds the character still.
+    public bool Locked { get; set; }
+
     public BotBrain Brain { get; private set; }
     public bool IsBot => Brain != null;
     public int BotNumber => botNumber.Value;
-    public string DisplayName => IsBot ? $"Бот {botNumber.Value}" : $"Игрок {OwnerClientId + 1}";
+    public string DisplayName => IsBot ? $"Бот {botNumber.Value}" : nicknameText.Length > 0 ? nicknameText : $"Игрок {OwnerClientId + 1}";
     // Feeds PlayerAppearance / the ready list: bots get colors from their own range, away from the players' ids.
     public ulong ColorId => IsBot ? 100UL + (ulong)Mathf.Max(0, botNumber.Value) : OwnerClientId;
 
@@ -119,6 +154,11 @@ public class PlayerController : NetworkBehaviour
 
     public bool Airborne => motionState.Value != StateGrounded;
     public bool IsFlipping => motionState.Value == StateFlip;
+
+    // Dash: everybody sees it (motion state), only the owner has the cooldown.
+    public bool IsDashing => motionState.Value == StateDash;
+    public float DashProgress => IsDashing ? Mathf.Clamp01((Time.time - dashStartTime) / dashDuration) : 0f;
+    public float DashCooldownLeft => Mathf.Max(0f, nextDashTime - Time.time);
 
     // How long a flip jump stays in the air (same physics on every machine, so the flip lines up).
     public float FlipDuration => 2f * flipJumpSpeed / Mathf.Abs(gravity);
@@ -140,7 +180,7 @@ public class PlayerController : NetworkBehaviour
     public bool ControlledNow { get; private set; }   // owner: input is currently allowed (not paused / frozen / stunned)
     public bool IsLeaping => leaping;
     public bool CanStartAbility =>
-        ControlledNow && !flipping && !leaping && !IsAttacking && (Abilities == null || !Abilities.InputLocked);
+        ControlledNow && !flipping && !leaping && !dashing && !IsAttacking && (Abilities == null || !Abilities.InputLocked);
 
     // Hit reaction: seconds since we were hit, and the direction the punch pushed us.
     public float HitTime => Time.time - hitStartTime;
@@ -178,6 +218,10 @@ public class PlayerController : NetworkBehaviour
         attackAction.AddBinding("<Mouse>/rightButton");
         attackAction.AddBinding("<Gamepad>/buttonWest");
         attackAction.AddBinding("<Gamepad>/rightTrigger");
+
+        dashAction = new InputAction("Dash", InputActionType.Button);
+        dashAction.AddBinding("<Keyboard>/ctrl");   // either Ctrl key
+        dashAction.AddBinding("<Gamepad>/buttonEast");
     }
 
     public override void OnNetworkSpawn()
@@ -185,12 +229,18 @@ public class PlayerController : NetworkBehaviour
         motionState.OnValueChanged += OnMotionStateChanged;
         attackCounter.OnValueChanged += OnAttackCounterChanged;
         botNumber.OnValueChanged += OnBotNumberChanged;
+        nickname.OnValueChanged += OnNicknameChanged;
+        nicknameText = PlayerNickname.Clean(nickname.Value.ToString());
 
         ApplyColor();
 
         lastPosition = transform.position;
         // A bot lives on the host too, but it has no keyboard, no camera and its spawn point is set by the host.
         if (!IsOwner || IsBot) return;
+
+        // Tell everybody who we are (the start menu doesn't let anybody in without a nickname).
+        nickname.Value = PlayerNickname.ToNetwork(PlayerNickname.Current);
+        style.Value = PlayerStyle.Saved;
 
         // Put every player on their own spot so characters don't spawn inside each other.
         controller.enabled = false;
@@ -202,6 +252,7 @@ public class PlayerController : NetworkBehaviour
         sprintAction.Enable();
         jumpAction.Enable();
         attackAction.Enable();
+        dashAction.Enable();
 
         var cam = Camera.main;
         if (cam != null)
@@ -217,10 +268,12 @@ public class PlayerController : NetworkBehaviour
         motionState.OnValueChanged -= OnMotionStateChanged;
         attackCounter.OnValueChanged -= OnAttackCounterChanged;
         botNumber.OnValueChanged -= OnBotNumberChanged;
+        nickname.OnValueChanged -= OnNicknameChanged;
         moveAction.Disable();
         sprintAction.Disable();
         jumpAction.Disable();
         attackAction.Disable();
+        dashAction.Disable();
 
         if (IsOwner && !IsBot && Camera.main != null)
         {
@@ -233,15 +286,24 @@ public class PlayerController : NetworkBehaviour
     {
         var appearance = GetComponent<PlayerAppearance>();
         if (appearance != null) appearance.SetPlayerColor(ColorId);
+
+        // The gloves cover the hands the color was just given to.
+        var characterStyle = GetComponent<CharacterStyle>();
+        if (characterStyle != null) characterStyle.RefreshColors();
     }
 
     // A bot's number can arrive just after it spawns, so recolor when it does.
     void OnBotNumberChanged(int previous, int next) => ApplyColor();
 
+    // The nickname can arrive just after the character appears on other machines.
+    void OnNicknameChanged(FixedString64Bytes previous, FixedString64Bytes next) =>
+        nicknameText = PlayerNickname.Clean(next.ToString());
+
     void OnMotionStateChanged(byte previous, byte next)
     {
         // Remote players start their somersault the moment the owner announces it.
         if (next == StateFlip) flipStartTime = Time.time;
+        if (next == StateDash) dashStartTime = Time.time;
     }
 
     void OnAttackCounterChanged(byte previous, byte next)
@@ -281,7 +343,7 @@ public class PlayerController : NetworkBehaviour
         bool bot = Brain != null;
         // Dancing and leaping take over the character for a moment.
         bool abilityBusy = leaping || (Abilities != null && Abilities.InputLocked);
-        bool controlled = stunTimer <= 0f && matchAllows && !abilityBusy && (bot || (NetworkGame.InGame && !PauseMenu.IsPaused));
+        bool controlled = stunTimer <= 0f && matchAllows && !abilityBusy && !Locked && (bot || (NetworkGame.InGame && !PauseMenu.IsPaused));
         ControlledNow = controlled && !bot;
 
         Vector3 forward = Vector3.forward;
@@ -295,12 +357,13 @@ public class PlayerController : NetworkBehaviour
         // The same "buttons" for everybody: where to go, where to aim, and whether to sprint / jump / punch.
         Vector3 direction;
         Vector3 aim = forward;
-        bool sprintHeld, jumpPressed, attackPressed;
+        bool sprintHeld, jumpPressed, attackPressed, dashPressed;
         if (bot)
         {
             Brain.Think(this, controlled, out direction, out aim, out attackPressed);
             sprintHeld = false;
             jumpPressed = false;
+            dashPressed = false;
         }
         else
         {
@@ -308,7 +371,9 @@ public class PlayerController : NetworkBehaviour
             direction = forward * input.y + right * input.x;
             sprintHeld = controlled && sprintAction.IsPressed();
             jumpPressed = controlled && jumpAction.WasPressedThisFrame();
-            attackPressed = controlled && attackAction.WasPressedThisFrame();
+            // With the card panel open the mouse is busy with the cards, so the right button doesn't punch.
+            attackPressed = controlled && !PauseMenu.PanelOpen && attackAction.WasPressedThisFrame();
+            dashPressed = controlled && !PauseMenu.PanelOpen && dashAction.WasPressedThisFrame();
         }
         float inputMagnitude = Mathf.Min(1f, direction.magnitude);
 
@@ -331,7 +396,13 @@ public class PlayerController : NetworkBehaviour
         if (jumpPressed) jumpBufferTimer = jumpBufferTime;
         else jumpBufferTimer -= dt;
 
-        if (jumpBufferTimer > 0f && coyoteTimer > 0f && !flipping)
+        if (dashPressed && Time.time >= nextDashTime && !dashing && !flipping && !leaping && !IsAttacking)
+            StartDash(direction);
+
+        // A dash lasts a fraction of a second; a punch that hit us (or a teleport) cuts it short.
+        if (dashing && (Time.time - dashStartTime >= dashDuration || stunTimer > 0f)) dashing = false;
+
+        if (jumpBufferTimer > 0f && coyoteTimer > 0f && !flipping && !dashing)
         {
             if (SprintAmount > 0.5f && inputMagnitude > 0.1f)
                 StartFlip(direction);
@@ -342,7 +413,7 @@ public class PlayerController : NetworkBehaviour
             coyoteTimer = 0f;
         }
 
-        if (controlled && !flipping && Time.time >= nextAttackTime && attackPressed)
+        if (controlled && !flipping && !dashing && Time.time >= nextAttackTime && attackPressed)
             StartAttack(aim);
 
         if (hitPending && AttackTime >= AttackHitDelay)
@@ -355,7 +426,7 @@ public class PlayerController : NetworkBehaviour
         // otherwise the character turns towards where you steer.
         // A bot always faces whoever it is fighting, even while it strafes.
         Vector3 facing = bot ? aim : direction;
-        if (!flipping && !leaping && !IsAttacking && facing.sqrMagnitude > 0.001f)
+        if (!flipping && !leaping && !dashing && !IsAttacking && facing.sqrMagnitude > 0.001f)
         {
             Quaternion target = Quaternion.LookRotation(facing, Vector3.up);
             transform.rotation = Quaternion.RotateTowards(transform.rotation, target, turnSpeed * dt);
@@ -365,11 +436,16 @@ public class PlayerController : NetworkBehaviour
             verticalVelocity = -2f;
         verticalVelocity += gravity * dt;
 
+        // The dash bursts out fast and slows a little towards its end.
+        float dashSpeedNow = dashSpeed * Mathf.Lerp(1.2f, 0.6f, Mathf.Clamp01((Time.time - dashStartTime) / dashDuration));
+
         Vector3 horizontal = flipping
             ? flipDirection * (moveSpeed * sprintMultiplier * flipSpeedBoost)
             : leaping
                 ? leapDirection * leapSpeed
-                : direction * (moveSpeed * sprintFactor);
+                : dashing
+                    ? dashDirection * dashSpeedNow
+                    : direction * (moveSpeed * sprintFactor);
 
         // A small step forward into the punch, and whatever a punch that hit us added.
         if (AttackTime > 0.04f && AttackTime < 0.2f) horizontal += transform.forward * lungeSpeed;
@@ -388,8 +464,24 @@ public class PlayerController : NetworkBehaviour
             if (Abilities != null) Abilities.OnLeapLanded(transform.position);
         }
 
-        motionState.Value = flipping ? StateFlip : airTime > 0.1f ? StateJump : StateGrounded;
+        motionState.Value = dashing ? StateDash : flipping ? StateFlip : airTime > 0.1f ? StateJump : StateGrounded;
         Speed01 = Mathf.MoveTowards(Speed01, inputMagnitude, 8f * dt);
+    }
+
+    // Ctrl: a very fast hop in the direction we are running (or the way we face when standing still).
+    void StartDash(Vector3 direction)
+    {
+        Vector3 flat = new Vector3(direction.x, 0f, direction.z);
+        dashDirection = flat.sqrMagnitude > 0.001f ? flat.normalized : transform.forward;
+        dashing = true;
+        dashStartTime = Time.time;
+        nextDashTime = Time.time + DashCooldown;
+
+        transform.rotation = Quaternion.LookRotation(dashDirection, Vector3.up);
+        if (controller.isGrounded) verticalVelocity = dashHop;
+        hitPending = false;
+        jumpBufferTimer = 0f;
+        motionState.Value = StateDash;
     }
 
     void StartFlip(Vector3 direction)
@@ -535,16 +627,19 @@ public class PlayerController : NetworkBehaviour
         }
 
         var mob = targetObject.GetComponent<Mob>();
-        if (mob != null) mob.ServerHit(direction, power, damage);
+        if (mob != null) mob.ServerHit(direction, power, Abilities != null ? Abilities.ScaleDamage(damage) : damage);
     }
 
     // Host side: one player hurts another (`this` is the attacker). Used by punches and by every ability card.
     // Outside a fight players can shove each other around for fun, without harm.
     // Fighters only hurt each other while the fight is on, and only while both are still standing.
     // If the victim has the Thorns card active, the attacker takes double the damage they dealt.
+    // A victim behind the Shield card takes no damage and isn't even pushed; an attacker in Rage deals double.
     public bool ServerStrike(PlayerController victim, int damage, Vector3 direction, float power)
     {
         if (victim == null || victim == this) return false;
+        if (victim.Abilities != null && victim.Abilities.ShieldActive) return false;
+        if (Abilities != null) damage = Abilities.ScaleDamage(damage);
 
         if (inMatch.Value || victim.inMatch.Value)
         {
@@ -584,10 +679,18 @@ public class PlayerController : NetworkBehaviour
 
     public void ServerDamage(int amount) => health.Value = Mathf.Max(0, health.Value - amount);
 
+    // The Heal card: back up towards full health (a knocked-out fighter can't be healed).
+    public void ServerHeal(int amount)
+    {
+        if (health.Value <= 0) return;
+        health.Value = Mathf.Min(MaxHealth, health.Value + amount);
+    }
+
     // Host side, before the bot is spawned: number it and put it straight into the match, already "ready".
     public void ServerInitBot(int number)
     {
         botNumber.Value = number;
+        style.Value = CharacterStyleCatalog.RandomFor(number);   // every bot is dressed differently
         inMatch.Value = true;
         ready.Value = true;
         health.Value = MaxHealth;
@@ -648,6 +751,7 @@ public class PlayerController : NetworkBehaviour
         stunTimer = 0f;
         flipping = false;
         leaping = false;
+        dashing = false;
         jumpBufferTimer = 0f;
         hitPending = false;
         lastPosition = position;

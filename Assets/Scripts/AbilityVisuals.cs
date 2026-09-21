@@ -4,6 +4,8 @@ using UnityEngine;
 // What the ability cards look like on a character, for everybody to see:
 //  - Thorns: a ring of grey spikes sticking out of the body while the buff is on
 //  - Fire dance: a ring of flames rising around the dancer
+//  - Shield: a sparkling bubble around the character
+//  - Rage: red flames streaming off the character
 // Everything is built in code the first time it's needed.
 [RequireComponent(typeof(PlayerAbilities))]
 public class AbilityVisuals : MonoBehaviour
@@ -14,14 +16,128 @@ public class AbilityVisuals : MonoBehaviour
 
     PlayerAbilities abilities;
     Transform spikeRoot;
-    ParticleSystem fire;
+    PlayerController player;
+    ParticleSystem fire, shieldSparkles, rageFlames, dashTrail;
 
-    void Awake() => abilities = GetComponent<PlayerAbilities>();
+    void Awake()
+    {
+        abilities = GetComponent<PlayerAbilities>();
+        player = GetComponent<PlayerController>();
+    }
 
     void Update()
     {
         UpdateSpikes(abilities.ThornsActive);
         UpdateFire(abilities.IsDancing);
+        UpdateAura(ref shieldSparkles, abilities.ShieldActive, BuildShield);
+        UpdateAura(ref rageFlames, abilities.RageActive, BuildRage);
+        UpdateAura(ref dashTrail, player.IsDashing, BuildDashTrail);   // the Ctrl dash isn't a card but looks the same to everybody
+    }
+
+    // White-blue speed sparks left hanging in the air behind a dashing character.
+    ParticleSystem BuildDashTrail()
+    {
+        var ps = NewAura("DashTrail", new Vector3(0f, 0.7f, 0f), Quaternion.identity,
+            ParticleSystemSimulationSpace.World, 0.25f, 0.45f, 0.1f, 0.26f,
+            new Color(0.6f, 0.9f, 1f), Color.white, 400f);
+
+        var shape = ps.shape;
+        shape.shapeType = ParticleSystemShapeType.Sphere;
+        shape.radius = 0.4f;
+        return ps;
+    }
+
+    // ---- shield and rage: particle auras, built the first time they are needed --------------------
+
+    void UpdateAura(ref ParticleSystem aura, bool active, System.Func<ParticleSystem> build)
+    {
+        if (aura == null)
+        {
+            if (!active || HitEffects.Instance == null) return;
+            aura = build();
+        }
+
+        var emission = aura.emission;
+        if (emission.enabled != active)
+        {
+            emission.enabled = active;
+            if (active && !aura.isPlaying) aura.Play();
+        }
+    }
+
+    // A sparkling bubble of light hugging the character.
+    ParticleSystem BuildShield()
+    {
+        var ps = NewAura("ShieldSparkles", new Vector3(0f, 0.9f, 0f), Quaternion.identity,
+            ParticleSystemSimulationSpace.Local, 0.5f, 0.8f, 0.13f, 0.24f,
+            new Color(0.35f, 0.85f, 1f), Color.white, 200f);
+
+        var shape = ps.shape;
+        shape.shapeType = ParticleSystemShapeType.Sphere;
+        shape.radius = 1.2f;
+        shape.radiusThickness = 0f; // only the surface: a hollow bubble
+        return ps;
+    }
+
+    // Red flames streaming up off the character.
+    ParticleSystem BuildRage()
+    {
+        var ps = NewAura("RageFlames", new Vector3(0f, 0.15f, 0f), Quaternion.Euler(-90f, 0f, 0f),
+            ParticleSystemSimulationSpace.World, 0.5f, 0.9f, 0.18f, 0.34f,
+            new Color(1f, 0.15f, 0.1f), new Color(1f, 0.55f, 0.1f), 80f);
+
+        var shape = ps.shape;
+        shape.shapeType = ParticleSystemShapeType.Circle;
+        shape.radius = 0.6f;
+        shape.radiusThickness = 1f;
+
+        var velocity = ps.velocityOverLifetime;
+        velocity.enabled = true;
+        velocity.space = ParticleSystemSimulationSpace.World;
+        velocity.x = new ParticleSystem.MinMaxCurve(0f, 0f);
+        velocity.y = new ParticleSystem.MinMaxCurve(1.6f, 2.8f);
+        velocity.z = new ParticleSystem.MinMaxCurve(0f, 0f);
+        return ps;
+    }
+
+    ParticleSystem NewAura(string objectName, Vector3 localPosition, Quaternion localRotation,
+        ParticleSystemSimulationSpace space, float lifeMin, float lifeMax, float sizeMin, float sizeMax,
+        Color colorA, Color colorB, float rate)
+    {
+        var fx = HitEffects.Instance;
+        var go = new GameObject(objectName);
+        go.transform.SetParent(transform, false);
+        go.transform.localPosition = localPosition;
+        go.transform.localRotation = localRotation;
+
+        var ps = go.AddComponent<ParticleSystem>();
+        ps.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+
+        var main = ps.main;
+        main.duration = 1f;
+        main.loop = true;
+        main.playOnAwake = false;
+        main.startLifetime = new ParticleSystem.MinMaxCurve(lifeMin, lifeMax);
+        main.startSpeed = 0f;
+        main.startSize = new ParticleSystem.MinMaxCurve(sizeMin, sizeMax);
+        main.startColor = new ParticleSystem.MinMaxGradient(colorA, colorB);
+        main.gravityModifier = 0f;
+        main.simulationSpace = space;
+        main.maxParticles = 300;
+
+        var emission = ps.emission;
+        emission.rateOverTime = rate;
+        emission.enabled = false;
+
+        var shrink = ps.sizeOverLifetime;
+        shrink.enabled = true;
+        shrink.size = new ParticleSystem.MinMaxCurve(1f, AnimationCurve.Linear(0f, 1f, 1f, 0f));
+
+        var renderer = go.GetComponent<ParticleSystemRenderer>();
+        renderer.renderMode = ParticleSystemRenderMode.Mesh;
+        renderer.mesh = fx.SphereMesh;
+        renderer.sharedMaterial = fx.SparkMaterial;
+        return ps;
     }
 
     // ---- thorns -------------------------------------------------------------------------------
@@ -108,14 +224,15 @@ public class AbilityVisuals : MonoBehaviour
         main.playOnAwake = false;
         main.startLifetime = new ParticleSystem.MinMaxCurve(0.6f, 1f);
         main.startSpeed = 0f;
-        main.startSize = new ParticleSystem.MinMaxCurve(0.25f, 0.55f);
+        main.startSize = new ParticleSystem.MinMaxCurve(0.4f, 0.9f);   // a wide ring needs bigger flames
         main.startColor = new ParticleSystem.MinMaxGradient(new Color(1f, 0.8f, 0.2f), new Color(1f, 0.25f, 0.05f));
         main.gravityModifier = 0f;
         main.simulationSpace = ParticleSystemSimulationSpace.World;
-        main.maxParticles = 300;
+        main.maxParticles = 900;
 
+        // The ring is about 3 times longer than it used to be, so it needs about 3 times as many flames.
         var emission = fire.emission;
-        emission.rateOverTime = 90f;
+        emission.rateOverTime = 320f;
         emission.enabled = false;
 
         // A ring on the ground, a bit inside the damage radius so what burns looks like what hurts.

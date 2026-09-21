@@ -2,50 +2,62 @@ using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
-// The five ability cards of one character. Input, cooldowns and the "start" of every card run on the owner's
-// machine; everything that hurts somebody (or buffs a fighter) is decided by the host, like normal punches.
+// The ability cards of one character (ten cards exist; the player puts up to four of them into the four slots).
+// Input, cooldowns and the "start" of every card run on the owner's machine; everything that hurts somebody
+// (or buffs a fighter) is decided by the host, like normal punches.
 //
-//   1  Heavy punch   (LMB / key 1)  20 damage
-//   2  Leap slam     (key 2)        jump forward, area hit on landing
-//   3  Teleport      (key 3)        up to 50 m towards where the camera looks
-//   4  Thorns        (key 4)        whoever hits you takes double damage for a few seconds
-//   5  Fire dance    (key 5)        dance in a ring of fire, 15 damage every 0.4 s to everybody close
+//   Slot keys 1-4 use whatever card sits in that slot; the left mouse button also plays the Heavy punch card.
+//   Heavy punch  20 damage             Leap slam   jump forward, area hit on landing
+//   Teleport     up to 50 m            Thorns      whoever hits you takes double damage for a few seconds
+//   Fire dance   15 damage / 0.4 s     Lightning   instant bolt along the aim line
+//   Heal         +30 health            Shield      no damage taken for a few seconds
+//   Rage         double damage dealt   Vortex      pulls everybody close towards you
 [RequireComponent(typeof(PlayerController))]
 public class PlayerAbilities : NetworkBehaviour
 {
-    enum Fx : byte { Slam = 0, Teleport = 1, Thorns = 2, HeavyImpact = 3 }
+    enum Fx : byte { Slam = 0, Teleport = 1, Thorns = 2, HeavyImpact = 3, Heal = 4, Shield = 5, Rage = 6, Vortex = 7 }
 
-    // Written by the host, read by everybody (so all clients draw the spikes / fire).
+    // Written by the host, read by everybody (so all clients draw the spikes / fire / shield).
     readonly NetworkVariable<bool> thorns = new NetworkVariable<bool>(
         false, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
     readonly NetworkVariable<bool> dancing = new NetworkVariable<bool>(
         false, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
+    readonly NetworkVariable<bool> shield = new NetworkVariable<bool>(
+        false, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
+    readonly NetworkVariable<bool> rage = new NetworkVariable<bool>(
+        false, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
 
     PlayerController player;
-    InputAction heavyAction, leapAction, teleportAction, thornsAction, danceAction;
+    readonly InputAction[] slotActions = new InputAction[AbilityLoadout.SlotCount];
     readonly float[] readyAt = new float[AbilityCatalog.All.Length];   // owner: when each card can be used again
     float danceLockUntil;                                              // owner: no moving while dancing
-    bool aimingTeleport;                                               // owner: teleport key is held
+    int aimingSlot = -1;                                               // owner: slot of the teleport card while its key is held
     Transform marker;                                                  // owner: shows where the teleport lands
     Material markerMaterial;
-    double thornsEnd, danceEnd, nextDanceTick;                         // host
+    double thornsEnd, danceEnd, nextDanceTick, shieldEnd, rageEnd;     // host
 
     public bool ThornsActive => thorns.Value;
     public bool IsDancing => dancing.Value;
+    public bool ShieldActive => shield.Value;
+    public bool RageActive => rage.Value;
     public bool InputLocked => Time.time < danceLockUntil;
 
     public float CooldownLeft(AbilityId id) => Mathf.Max(0f, readyAt[(int)id] - Time.time);
-    public bool IsActive(AbilityId id) => (id == AbilityId.Thorns && thorns.Value) || (id == AbilityId.Dance && dancing.Value);
+    public bool IsActive(AbilityId id) =>
+        (id == AbilityId.Thorns && thorns.Value) || (id == AbilityId.Dance && dancing.Value) ||
+        (id == AbilityId.Shield && shield.Value) || (id == AbilityId.Rage && rage.Value);
+
+    // Host: what a hit of this size becomes for this fighter (double while the rage lasts).
+    public int ScaleDamage(int damage) => rage.Value ? damage * AbilityCatalog.RageMultiplier : damage;
 
     void Awake()
     {
         player = GetComponent<PlayerController>();
 
-        heavyAction = Button("Heavy", "<Keyboard>/1", "<Gamepad>/leftTrigger");
-        leapAction = Button("Leap", "<Keyboard>/2", "<Gamepad>/leftShoulder");
-        teleportAction = Button("Teleport", "<Keyboard>/3", "<Gamepad>/rightShoulder");
-        thornsAction = Button("Thorns", "<Keyboard>/4", "<Gamepad>/dpad/up");
-        danceAction = Button("Dance", "<Keyboard>/5", "<Gamepad>/dpad/down");
+        slotActions[0] = Button("Slot1", "<Keyboard>/1", "<Gamepad>/leftTrigger");
+        slotActions[1] = Button("Slot2", "<Keyboard>/2", "<Gamepad>/leftShoulder");
+        slotActions[2] = Button("Slot3", "<Keyboard>/3", "<Gamepad>/rightShoulder");
+        slotActions[3] = Button("Slot4", "<Keyboard>/4", "<Gamepad>/dpad/up");
     }
 
     static InputAction Button(string name, params string[] bindings)
@@ -58,21 +70,13 @@ public class PlayerAbilities : NetworkBehaviour
     public override void OnNetworkSpawn()
     {
         if (!IsOwner || player.IsBot) return;
-        heavyAction.Enable();
-        leapAction.Enable();
-        teleportAction.Enable();
-        thornsAction.Enable();
-        danceAction.Enable();
+        foreach (var action in slotActions) action.Enable();
     }
 
     public override void OnNetworkDespawn()
     {
         if (marker != null) Destroy(marker.gameObject);
-        heavyAction.Disable();
-        leapAction.Disable();
-        teleportAction.Disable();
-        thornsAction.Disable();
-        danceAction.Disable();
+        foreach (var action in slotActions) action.Disable();
     }
 
     void Update()
@@ -87,23 +91,44 @@ public class PlayerAbilities : NetworkBehaviour
     void OwnerInput()
     {
         // Teleport is "hold to aim, let go to jump", so while aiming nothing else is read.
-        if (aimingTeleport)
+        if (aimingSlot >= 0)
         {
             UpdateTeleportAim();
             return;
         }
 
-        if (!player.CanStartAbility) return;
+        // With the card panel open the mouse is busy with the cards and the number keys are not "fire".
+        if (!player.CanStartAbility || PauseMenu.PanelOpen) return;
 
         // The left mouse button only counts while the cursor is captured (otherwise it's for clicking buttons).
         bool mouseHeavy = Mouse.current != null && Cursor.lockState == CursorLockMode.Locked &&
                           Mouse.current.leftButton.wasPressedThisFrame;
+        if (mouseHeavy)
+        {
+            if (AbilityLoadout.SlotOf(AbilityId.HeavyPunch) >= 0) Use(AbilityId.HeavyPunch);
+            return;
+        }
 
-        if (mouseHeavy || heavyAction.WasPressedThisFrame()) Use(AbilityId.HeavyPunch);
-        else if (leapAction.WasPressedThisFrame()) Use(AbilityId.LeapSlam);
-        else if (teleportAction.WasPressedThisFrame() && CooldownLeft(AbilityId.Teleport) <= 0f) aimingTeleport = true;
-        else if (thornsAction.WasPressedThisFrame()) Use(AbilityId.Thorns);
-        else if (danceAction.WasPressedThisFrame()) Use(AbilityId.Dance);
+        for (int slot = 0; slot < slotActions.Length; slot++)
+        {
+            if (!slotActions[slot].WasPressedThisFrame()) continue;
+            PressSlot(slot);
+            break;
+        }
+    }
+
+    void PressSlot(int slot)
+    {
+        int ability = AbilityLoadout.Get(slot);
+        if (ability < 0) return; // an empty slot does nothing
+
+        var id = (AbilityId)ability;
+        if (id == AbilityId.Teleport)
+        {
+            if (CooldownLeft(id) <= 0f) aimingSlot = slot;
+            return;
+        }
+        Use(id);
     }
 
     void Use(AbilityId id)
@@ -130,6 +155,31 @@ public class PlayerAbilities : NetworkBehaviour
                 DanceRpc();
                 started = true;
                 break;
+            case AbilityId.Lightning:
+            {
+                Vector3 aim = player.AimDirection();
+                transform.rotation = Quaternion.LookRotation(aim, Vector3.up);
+                LightningRpc(transform.position + Vector3.up, aim);
+                started = true;
+                break;
+            }
+            case AbilityId.Heal:
+                if (player.Health >= PlayerController.MaxHealth) return; // nothing to heal: keep the card ready
+                HealRpc();
+                started = true;
+                break;
+            case AbilityId.Shield:
+                ShieldRpc();
+                started = true;
+                break;
+            case AbilityId.Rage:
+                RageRpc();
+                started = true;
+                break;
+            case AbilityId.Vortex:
+                VortexRpc();
+                started = true;
+                break;
         }
 
         if (started) readyAt[(int)id] = Time.time + AbilityCatalog.Get(id).Cooldown;
@@ -146,7 +196,8 @@ public class PlayerAbilities : NetworkBehaviour
     // While the key is held a marker shows where we'd land; letting go jumps there (Esc or a pause cancels).
     void UpdateTeleportAim()
     {
-        bool cancel = !player.ControlledNow || (Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame);
+        bool cancel = !player.ControlledNow || PauseMenu.PanelOpen ||
+                      (Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame);
         if (cancel)
         {
             StopAiming();
@@ -156,7 +207,7 @@ public class PlayerAbilities : NetworkBehaviour
         bool valid = FindTeleportSpot(out Vector3 destination, out float yaw);
         ShowMarker(valid, destination);
 
-        if (teleportAction.WasReleasedThisFrame())
+        if (slotActions[aimingSlot].WasReleasedThisFrame())
         {
             StopAiming();
             if (!valid) return;
@@ -170,7 +221,7 @@ public class PlayerAbilities : NetworkBehaviour
 
     void StopAiming()
     {
-        aimingTeleport = false;
+        aimingSlot = -1;
         if (marker != null) marker.gameObject.SetActive(false);
     }
 
@@ -322,11 +373,139 @@ public class PlayerAbilities : NetworkBehaviour
         nextDanceTick = NetworkManager.ServerTime.Time + AbilityCatalog.DanceTickInterval;
     }
 
+    // A bolt along the aim line: it hits the nearest target within reach (a player, a slime or the punching bag).
+    [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Owner)]
+    void LightningRpc(Vector3 origin, Vector3 direction)
+    {
+        if (!ServerMayUse()) return;
+        if (Vector3.Distance(origin, transform.position + Vector3.up) > 3f) return; // must start at the character
+
+        direction.y = 0f;
+        if (direction.sqrMagnitude < 0.01f) return;
+        direction.Normalize();
+
+        float nearest = AbilityCatalog.LightningRange;
+        PlayerController hitPlayer = null;
+        Mob hitMob = null;
+        bool hitBag = false;
+        Vector3 hitPoint = origin + direction * nearest;
+
+        foreach (var victim in MatchManager.ActivePlayers(false))
+        {
+            if (victim == player || victim.IsDead) continue;
+            if (OnLine(origin, direction, victim.transform.position, out float along) && along < nearest)
+            {
+                nearest = along;
+                hitPlayer = victim;
+                hitMob = null;
+                hitBag = false;
+                hitPoint = victim.transform.position + Vector3.up * 0.9f;
+            }
+        }
+
+        foreach (var mob in FindObjectsByType<Mob>())
+        {
+            if (OnLine(origin, direction, mob.transform.position, out float along) && along < nearest)
+            {
+                nearest = along;
+                hitPlayer = null;
+                hitMob = mob;
+                hitBag = false;
+                hitPoint = mob.transform.position + Vector3.up * 0.4f;
+            }
+        }
+
+        var bag = PunchingBag.Instance;
+        if (bag != null && OnLine(origin, direction, bag.transform.position, out float bagAlong) && bagAlong < nearest)
+        {
+            nearest = bagAlong;
+            hitPlayer = null;
+            hitMob = null;
+            hitBag = true;
+            hitPoint = bag.transform.position + Vector3.down * 0.6f;
+        }
+
+        if (hitPlayer != null) player.ServerStrike(hitPlayer, AbilityCatalog.LightningDamage, direction, 1.4f);
+        else if (hitMob != null) hitMob.ServerHit(direction, 1.4f, ScaleDamage(AbilityCatalog.LightningDamage));
+        else if (hitBag) player.ServerBagHit(hitPoint, direction, 1.4f);
+
+        LightningFxRpc(origin, hitPoint);
+    }
+
+    // Is `point` within a bolt's width of the line that starts at `origin` (flat, along `direction`)?
+    static bool OnLine(Vector3 origin, Vector3 direction, Vector3 point, out float along)
+    {
+        Vector3 to = point - origin;
+        to.y = 0f;
+        along = Vector3.Dot(to, direction);
+        if (along < 0f || along > AbilityCatalog.LightningRange) return false;
+        return (to - direction * along).magnitude <= AbilityCatalog.LightningWidth;
+    }
+
+    [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Owner)]
+    void HealRpc()
+    {
+        if (!ServerMayUse()) return;
+        player.ServerHeal(AbilityCatalog.HealAmount);
+        EffectRpc((byte)Fx.Heal, transform.position);
+    }
+
+    [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Owner)]
+    void ShieldRpc()
+    {
+        if (!ServerMayUse()) return;
+        shield.Value = true;
+        shieldEnd = NetworkManager.ServerTime.Time + AbilityCatalog.ShieldDuration;
+        EffectRpc((byte)Fx.Shield, transform.position);
+    }
+
+    [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Owner)]
+    void RageRpc()
+    {
+        if (!ServerMayUse()) return;
+        rage.Value = true;
+        rageEnd = NetworkManager.ServerTime.Time + AbilityCatalog.RageDuration;
+        EffectRpc((byte)Fx.Rage, transform.position);
+    }
+
+    // Pulls everybody within reach towards us and hurts them a little.
+    [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Owner)]
+    void VortexRpc()
+    {
+        if (!ServerMayUse()) return;
+
+        Vector3 center = transform.position;
+        foreach (var victim in MatchManager.ActivePlayers(false))
+        {
+            if (victim == player) continue;
+            Vector3 toUs = center - victim.transform.position;
+            toUs.y = 0f;
+            if (toUs.magnitude > AbilityCatalog.VortexRadius) continue;
+            // A shove of speed v carries a player v*v/48 metres, so pick the speed that brings them (almost) to us.
+            float pull = Mathf.Clamp(toUs.magnitude - 1.5f, 0.5f, 5f);
+            player.ServerStrike(victim, AbilityCatalog.VortexDamage, Outward(toUs), Mathf.Sqrt(48f * pull) / 9f);
+        }
+
+        foreach (var mob in FindObjectsByType<Mob>())
+        {
+            Vector3 toUs = center - mob.transform.position;
+            toUs.y = 0f;
+            if (toUs.magnitude > AbilityCatalog.VortexRadius) continue;
+            // Slimes slide v*v/40 metres after a shove of speed 7 * power.
+            float pull = Mathf.Clamp(toUs.magnitude - 1.2f, 0.5f, 8f);
+            mob.ServerHit(Outward(toUs), Mathf.Sqrt(40f * pull) / 7f, ScaleDamage(AbilityCatalog.VortexDamage));
+        }
+
+        EffectRpc((byte)Fx.Vortex, center);
+    }
+
     void ServerTick()
     {
         double now = NetworkManager.ServerTime.Time;
 
         if (thorns.Value && now >= thornsEnd) thorns.Value = false;
+        if (shield.Value && now >= shieldEnd) shield.Value = false;
+        if (rage.Value && now >= rageEnd) rage.Value = false;
 
         if (dancing.Value)
         {
@@ -360,7 +539,7 @@ public class PlayerAbilities : NetworkBehaviour
             Vector3 d = mob.transform.position - center;
             d.y = 0f;
             if (d.magnitude > radius) continue;
-            mob.ServerHit(Outward(d), power, damage);
+            mob.ServerHit(Outward(d), power, ScaleDamage(damage));
         }
 
         var bag = PunchingBag.Instance;
@@ -400,7 +579,37 @@ public class PlayerAbilities : NetworkBehaviour
             case Fx.Thorns:
                 fx.Burst(position + Vector3.up * 0.9f, new Color(0.5f, 0.9f, 0.55f), 24, 5f, 0.14f);
                 break;
+            case Fx.Heal:
+                fx.Burst(position + Vector3.up * 0.9f, new Color(1f, 0.6f, 0.75f), 34, 4f, 0.15f);
+                fx.Shockwave(position, 1.7f, new Color(1f, 0.65f, 0.8f), 30);
+                break;
+            case Fx.Shield:
+                fx.Burst(position + Vector3.up * 0.9f, new Color(0.4f, 0.9f, 1f), 30, 6f, 0.14f);
+                fx.Shockwave(position, 1.9f, new Color(0.45f, 0.9f, 1f), 36);
+                break;
+            case Fx.Rage:
+                fx.Burst(position + Vector3.up * 0.9f, new Color(1f, 0.3f, 0.2f), 36, 6.5f, 0.17f);
+                fx.Shockwave(position, 2.2f, new Color(1f, 0.25f, 0.2f), 40);
+                Shake(0.2f);
+                break;
+            case Fx.Vortex:
+                fx.Implosion(position, AbilityCatalog.VortexRadius, new Color(0.55f, 0.6f, 1f), 90);
+                fx.Shockwave(position, 2f, new Color(0.6f, 0.65f, 1f), 30);
+                Shake(0.25f);
+                break;
         }
+    }
+
+    // Everybody sees the bolt from the caster to whatever it hit.
+    [Rpc(SendTo.Everyone)]
+    void LightningFxRpc(Vector3 from, Vector3 to)
+    {
+        var fx = HitEffects.Instance;
+        if (fx == null) return;
+
+        fx.Bolt(from, to, new Color(1f, 0.95f, 0.45f));
+        fx.Burst(to, new Color(1f, 0.95f, 0.5f), 26, 7f, 0.15f);
+        Shake(0.2f);
     }
 
     void Shake(float amount)

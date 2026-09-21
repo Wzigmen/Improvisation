@@ -17,6 +17,16 @@ public class MainMenu : MonoBehaviour
     Text joinStatus;
     RectTransform serverList;
     InputField ipField;
+
+    // nickname: a field in the top-right corner, and a small dialog that asks for it when somebody tries to play without one
+    CanvasGroup nickCornerGroup;
+    InputField nickField;
+    Text nickStatus;
+    GameObject nickDialog;
+    InputField dialogField;
+    Text dialogError;
+    System.Action pendingAction;   // what the player wanted to do when the dialog interrupted them
+
     Text hud;
     LanBrowser browser;
     int shownVersion = -1;
@@ -52,6 +62,16 @@ public class MainMenu : MonoBehaviour
     {
         if (!NetworkGame.InGame)
         {
+            // The nickname dialog takes all the keys: Enter confirms, Esc cancels.
+            if (nickDialog.activeSelf)
+            {
+                if (Keyboard.current != null && (Keyboard.current.enterKey.wasPressedThisFrame || Keyboard.current.numpadEnterKey.wasPressedThisFrame))
+                    ConfirmNickDialog();
+                else if (Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame)
+                    CloseNickDialog();
+                return;
+            }
+
             // Esc goes back from the server list.
             if (joinPanel.gameObject.activeSelf && Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame)
                 ShowMain(null);
@@ -78,6 +98,8 @@ public class MainMenu : MonoBehaviour
         browser.enabled = false;
         mainGroup.interactable = true;
         mainMessage.text = message ?? "";
+        nickDialog.SetActive(false);
+        RefreshNickCorner();
     }
 
     void ShowJoin()
@@ -118,12 +140,14 @@ public class MainMenu : MonoBehaviour
 
     void PlaySolo()
     {
+        if (NeedNickname(PlaySolo)) return;
         mainGroup.interactable = false;
         NetworkGame.Instance.StartSolo();
     }
 
     void HostGame()
     {
+        if (NeedNickname(HostGame)) return;
         mainGroup.interactable = false;
         mainMessage.text = "Создаём игру…";
         NetworkGame.Instance.StartHostForFriends();
@@ -131,6 +155,7 @@ public class MainMenu : MonoBehaviour
 
     void JoinServer(ServerInfo server)
     {
+        if (NeedNickname(() => JoinServer(server))) return;
         joinGroup.interactable = false;
         joinStatus.text = $"Подключаемся к {server.Name} ({server.Address})…";
         NetworkGame.Instance.Join(server.Address, server.Port);
@@ -138,6 +163,7 @@ public class MainMenu : MonoBehaviour
 
     void JoinByIp()
     {
+        if (NeedNickname(JoinByIp)) return;
         string text = ipField.text.Trim();
         if (text.Length == 0)
         {
@@ -166,6 +192,87 @@ public class MainMenu : MonoBehaviour
 #else
         Application.Quit();
 #endif
+    }
+
+    // ---- nickname ---------------------------------------------------------------------------
+
+    static char ValidateNickChar(string text, int index, char c) => PlayerNickname.IsAllowedChar(c) ? c : '\0';
+
+    // True (and the dialog opens) when there is no usable nickname yet; `action` is what to do after it is entered.
+    bool NeedNickname(System.Action action)
+    {
+        // Somebody may click "play" straight from the corner field, before it has reported that it lost focus.
+        if (!PlayerNickname.IsValid(PlayerNickname.Current) && PlayerNickname.IsValid(nickField.text))
+            PlayerNickname.Set(nickField.text);
+
+        if (PlayerNickname.IsValid(PlayerNickname.Current)) return false;
+
+        pendingAction = action;
+        dialogField.text = "";
+        dialogError.text = "";
+        nickDialog.SetActive(true);
+        nickDialog.transform.SetAsLastSibling();
+        nickCornerGroup.interactable = false;
+        mainGroup.interactable = false;
+        joinGroup.interactable = false;
+        dialogField.Select();
+        dialogField.ActivateInputField();
+        return true;
+    }
+
+    void ConfirmNickDialog()
+    {
+        if (!PlayerNickname.Set(dialogField.text))
+        {
+            dialogError.text = $"Ник слишком короткий: нужно хотя бы {PlayerNickname.MinLength} символа.";
+            dialogField.ActivateInputField();
+            return;
+        }
+
+        var action = pendingAction;
+        CloseNickDialog();   // (clears pendingAction)
+        RefreshNickCorner();
+        action?.Invoke();
+    }
+
+    void CloseNickDialog()
+    {
+        pendingAction = null;
+        nickDialog.SetActive(false);
+        nickCornerGroup.interactable = true;
+        mainGroup.interactable = true;
+        joinGroup.interactable = true;
+    }
+
+    // The corner field: saves the nickname as soon as the person leaves the field.
+    void OnNickEdited(string text)
+    {
+        string clean = PlayerNickname.Clean(text);
+        if (clean.Length == 0)
+        {
+            PlayerNickname.Clear();
+        }
+        else if (PlayerNickname.Set(clean))
+        {
+            nickField.text = clean;
+        }
+        else
+        {
+            nickStatus.color = new Color(1f, 0.55f, 0.5f);
+            nickStatus.text = $"Минимум {PlayerNickname.MinLength} символа";
+            return;
+        }
+        RefreshNickCorner();
+    }
+
+    void RefreshNickCorner()
+    {
+        string current = PlayerNickname.Current;
+        if (nickField.text != current && !nickField.isFocused) nickField.text = current;
+
+        bool valid = PlayerNickname.IsValid(current);
+        nickStatus.color = valid ? new Color(0.5f, 0.95f, 0.6f) : new Color(1f, 0.85f, 0.5f);
+        nickStatus.text = valid ? "Ник сохранён" : "Без ника в игру не войти";
     }
 
     // ---- server list ------------------------------------------------------------------------
@@ -202,6 +309,55 @@ public class MainMenu : MonoBehaviour
 
     // ---- UI ---------------------------------------------------------------------------------
 
+    // Top-right corner: "Ваш ник" and a field to type it in.
+    void BuildNickCorner(Transform parent)
+    {
+        var corner = UIKit.NewUI("NickCorner", parent);
+        corner.anchorMin = corner.anchorMax = corner.pivot = new Vector2(1f, 1f);
+        corner.anchoredPosition = new Vector2(-32f, -32f);
+        corner.sizeDelta = new Vector2(440f, 210f);
+        corner.gameObject.AddComponent<Image>().color = UIKit.PanelColor;
+        nickCornerGroup = corner.gameObject.AddComponent<CanvasGroup>();
+
+        var layout = corner.gameObject.AddComponent<VerticalLayoutGroup>();
+        layout.padding = new RectOffset(24, 24, 18, 16);
+        layout.spacing = 8f;
+        layout.childAlignment = TextAnchor.UpperCenter;
+        layout.childControlWidth = true;
+        layout.childControlHeight = true;
+        layout.childForceExpandWidth = true;
+        layout.childForceExpandHeight = false;
+
+        UIKit.AddLabel(corner, "Ваш ник", 32, FontStyle.Bold, Color.white, 44f, TextAnchor.MiddleLeft);
+        nickField = UIKit.AddInputField(corner, "введите ник", 70f);
+        nickField.characterLimit = PlayerNickname.MaxLength;
+        nickField.onValidateInput = ValidateNickChar;
+        nickField.onEndEdit.AddListener(OnNickEdited);
+        nickStatus = UIKit.AddLabel(corner, "", 24, FontStyle.Normal, Color.white, 34f, TextAnchor.MiddleLeft);
+    }
+
+    // The mini menu that appears when somebody presses a "play" button without a nickname.
+    void BuildNickDialog(Transform parent)
+    {
+        var root = UIKit.NewUI("NickDialog", parent);
+        UIKit.Stretch(root);
+        nickDialog = root.gameObject;
+        UIKit.AddDim(root, 0.6f);
+
+        var panel = UIKit.AddPanel(root, "NickPanel", new Vector2(760f, 560f));
+        UIKit.AddLabel(panel, "Введите ник", 56, FontStyle.Bold, Color.white, 80f);
+        UIKit.AddLabel(panel, $"Он будет виден над вашим персонажем. От {PlayerNickname.MinLength} до {PlayerNickname.MaxLength} символов: " +
+                              "буквы, цифры, пробел, _ - .", 26, FontStyle.Normal, new Color(1f, 1f, 1f, 0.75f), 76f);
+        dialogField = UIKit.AddInputField(panel, "ваш ник", 76f);
+        dialogField.characterLimit = PlayerNickname.MaxLength;
+        dialogField.onValidateInput = ValidateNickChar;
+        dialogError = UIKit.AddLabel(panel, "", 26, FontStyle.Bold, new Color(1f, 0.55f, 0.5f), 36f);
+        UIKit.AddButton(panel, "Готово", UIKit.Green, ConfirmNickDialog, 76f);
+        UIKit.AddButton(panel, "Отмена", UIKit.Gray, CloseNickDialog, 66f);
+
+        nickDialog.SetActive(false);
+    }
+
     void BuildUI()
     {
         var canvas = UIKit.CreateCanvas(transform, "MainMenuCanvas", 90);
@@ -230,6 +386,9 @@ public class MainMenu : MonoBehaviour
         ipField = UIKit.AddInputField(joinPanel, "например 26.12.34.56");
         UIKit.AddButton(joinPanel, "Подключиться по IP", UIKit.Green, JoinByIp, 76f);
         UIKit.AddButton(joinPanel, "Назад", UIKit.Gray, () => ShowMain(null), 76f);
+
+        BuildNickCorner(canvas.transform);
+        BuildNickDialog(canvas.transform);
 
         // In-game HUD (separate canvas so it stays visible when the menu is hidden)
         var hudCanvas = UIKit.CreateCanvas(transform, "HudCanvas", 50);

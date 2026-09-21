@@ -191,7 +191,7 @@ public class MatchUI : MonoBehaviour
         PauseMenu.UiWantsCursor = wantsCursor;
 
         if (wantsCursor) PauseMenu.SetCursorCaptured(false);
-        else if (NetworkGame.InGame && !PauseMenu.IsPaused) PauseMenu.SetCursorCaptured(true);
+        else if (NetworkGame.InGame && !PauseMenu.IsPaused && !PauseMenu.PanelOpen) PauseMenu.SetCursorCaptured(true);
     }
 
     void UpdateCountdown(MatchManager match, MatchManager.Phase phase, bool fighter)
@@ -380,7 +380,7 @@ public class MatchUI : MonoBehaviour
         hud = UIKit.NewUI("Hud", root);
         hud.anchorMin = hud.anchorMax = new Vector2(0.5f, 0f);
         hud.pivot = new Vector2(0.5f, 0f);
-        hud.anchoredPosition = new Vector2(0f, 50f);
+        hud.anchoredPosition = new Vector2(-120f, 50f); // a bit left of centre: the ability slots take the bottom right
         hud.sizeDelta = new Vector2(640f, 110f);
 
         infoText = UIKit.AddLabel(hud, "", 30, FontStyle.Bold, Color.white, 40f);

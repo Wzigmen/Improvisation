@@ -53,6 +53,7 @@ public class CartoonWalker : MonoBehaviour
     float dance;        // 0..1 blend into the dance
     float dancePhase;
     float knockedOut;   // 0..1 blend into the lying-down pose
+    float dash;         // 0..1 blend into the dash pose (leaning into it, arms and feet trailing behind)
     float flipAngle;
     bool wasAirborne;
 
@@ -78,6 +79,7 @@ public class CartoonWalker : MonoBehaviour
 
         air = Mathf.MoveTowards(air, airborne ? 1f : 0f, 10f * dt);
         tuck = Mathf.MoveTowards(tuck, flipping ? 1f : 0f, 12f * dt);
+        dash = Mathf.MoveTowards(dash, player.IsDashing ? 1f : 0f, 14f * dt);
         if (wasAirborne && !airborne) landTimer = landingSquashTime;
         wasAirborne = airborne;
         landTimer = Mathf.Max(0f, landTimer - dt);
@@ -99,14 +101,18 @@ public class CartoonWalker : MonoBehaviour
         Vector3 danceFootR = new Vector3(0f, Mathf.Max(0f, -dSin) * 0.22f * dance, 0f);
 
         // Feet: swing forward/back, lift while moving forward; dangle up in the air.
-        Vector3 feetAir = new Vector3(0f, 0.2f * air + 0.12f * tuck, 0f);
+        // (In a dash the whole model tips forward around its middle, see UpdateModelRotation, so the feet trail behind.)
+        Vector3 feetAir = new Vector3(0f, 0.2f * air * (1f - dash) + 0.12f * tuck, -0.12f * dash);
         leftFoot.localPosition = leftFootPos + feetAir + danceFootL + new Vector3(0f, Mathf.Max(0f, c) * stepHeight * walk, s * stepLength * stride);
         rightFoot.localPosition = rightFootPos + feetAir + danceFootR + new Vector3(0f, Mathf.Max(0f, -c) * stepHeight * walk, -s * stepLength * stride);
 
         // Hands swing opposite to the feet; fly up when jumping, hug the body when somersaulting.
-        float handsUp = 0.3f * air * (1f - tuck);
+        float handsUp = 0.3f * air * (1f - tuck) * (1f - dash);
         Vector3 leftHandOffset = new Vector3(0.28f * tuck, handsUp, -s * handSwing * stride);
         Vector3 rightHandOffset = new Vector3(-0.28f * tuck, handsUp, s * handSwing * stride);
+        // Dash: both arms swept back like a diver's.
+        leftHandOffset += new Vector3(0.1f * dash, 0f, -0.5f * dash);
+        rightHandOffset += new Vector3(-0.1f * dash, 0f, -0.5f * dash);
         leftHandOffset += new Vector3(-0.1f * dance, (0.5f + 0.5f * dSin) * 0.85f * dance, 0f);
         rightHandOffset += new Vector3(0.1f * dance, (0.5f - 0.5f * dSin) * 0.85f * dance, 0f);
 
@@ -136,7 +142,8 @@ public class CartoonWalker : MonoBehaviour
         body.localPosition = bodyPos + Vector3.up * (bob * bobHeight * walk + Mathf.Abs(dSin) * 0.12f * dance);
         float landing = landingSquashTime > 0f ? landTimer / landingSquashTime : 0f;
         float stretch = 1f + (bob - 0.5f) * 0.08f * walk + breath + 0.1f * air * (1f - tuck) - 0.08f * tuck
-                        - landingSquash * landing - 0.22f * hitAmount * hitWobble + 0.1f * Mathf.Abs(dSin) * dance;
+                        - landingSquash * landing - 0.22f * hitAmount * hitWobble + 0.1f * Mathf.Abs(dSin) * dance
+                        + 0.3f * dash; // stretched out along the direction of the dash
         body.localScale = new Vector3(bodyScale.x / Mathf.Sqrt(stretch), bodyScale.y * stretch, bodyScale.z / Mathf.Sqrt(stretch));
 
         // Lean into the walking direction (more when sprinting) and the punch; tip away from a hit.
@@ -234,7 +241,8 @@ public class CartoonWalker : MonoBehaviour
         // Knocked out of a fight: keel over forwards and stay down.
         knockedOut = Mathf.MoveTowards(knockedOut, player.IsDead ? 1f : 0f, 3f * dt);
 
-        Quaternion rotation = Quaternion.Euler(flipAngle + 80f * knockedOut, torsoYaw, 0f);
+        // A dash dives forward: the whole character tips over around its middle.
+        Quaternion rotation = Quaternion.Euler(flipAngle + 80f * knockedOut + 58f * dash, torsoYaw, 0f);
         model.localRotation = rotation;
         model.localPosition = modelPos + flipCenter - rotation * flipCenter + Vector3.down * (0.15f * knockedOut);
     }

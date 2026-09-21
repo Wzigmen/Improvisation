@@ -14,6 +14,12 @@ public class PauseMenu : MonoBehaviour
     // Set by other menus (the ready check) that need the mouse: the cursor stays free while true.
     public static bool UiWantsCursor;
 
+    // True while the ability card panel (C) or the fitting-room screen is open: the cursor stays free and the mouse
+    // belongs to that screen, so no punches, dashes or cards are fired.
+    public static bool AbilityPanelOpen;
+    public static bool CustomizerOpen;
+    public static bool PanelOpen => AbilityPanelOpen || CustomizerOpen;
+
     GameObject menuRoot;
     Button resumeButton;
     Button endMatchButton;
@@ -67,11 +73,11 @@ public class PauseMenu : MonoBehaviour
         else if (!alt && altFree)
         {
             altFree = false;
-            if (!UiWantsCursor) SetCursorCaptured(true);
+            if (!UiWantsCursor && !PanelOpen) SetCursorCaptured(true);
         }
 
         // Clicking back into the game window re-captures the cursor, unless a menu needs the mouse.
-        if (!UiWantsCursor && !altFree && Cursor.lockState != CursorLockMode.Locked &&
+        if (!UiWantsCursor && !PanelOpen && !altFree && Cursor.lockState != CursorLockMode.Locked &&
             Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
         {
             SetCursorCaptured(true);

@@ -27,10 +27,37 @@ public class CameraFollow : MonoBehaviour
     InputAction mouseLook;
     InputAction stickLook;
 
+    // The fitting room pins the camera to a fixed spot in front of the character.
+    Camera cam;
+    float normalFov = 60f;
+    bool fixedView;
+    Vector3 fixedPosition;
+    Quaternion fixedRotation;
+    float fixedFov;
+
     void Awake()
     {
         mouseLook = new InputAction("MouseLook", InputActionType.Value, "<Mouse>/delta");
         stickLook = new InputAction("StickLook", InputActionType.Value, "<Gamepad>/rightStick");
+        cam = GetComponent<Camera>();
+        if (cam != null) normalFov = cam.fieldOfView;
+    }
+
+    // Pins the camera to this pose (and field of view) until ClearFixedView is called.
+    public void SetFixedView(Vector3 position, Quaternion rotation, float fov)
+    {
+        fixedView = true;
+        fixedPosition = position;
+        fixedRotation = rotation;
+        fixedFov = fov;
+    }
+
+    // Back to following the character, right behind it.
+    public void ClearFixedView()
+    {
+        fixedView = false;
+        if (cam != null) cam.fieldOfView = normalFov;
+        if (target != null) SetTarget(target);
     }
 
     void OnEnable()
@@ -60,6 +87,13 @@ public class CameraFollow : MonoBehaviour
 
     void LateUpdate()
     {
+        if (fixedView)
+        {
+            transform.SetPositionAndRotation(fixedPosition, fixedRotation);
+            if (cam != null) cam.fieldOfView = fixedFov;
+            return;
+        }
+
         if (target == null)
         {
             yaw += idleSpeed * Time.unscaledDeltaTime;
