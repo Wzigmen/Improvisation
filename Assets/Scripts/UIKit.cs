@@ -17,6 +17,43 @@ public static class UIKit
         }
     }
 
+    static Sprite circleSprite;
+
+    // A soft-edged white circle, generated once and reused: tint it via Image.color to get a coloured dot of any
+    // size (item icons, and anywhere else a round UI shape is handy).
+    public static Sprite Circle()
+    {
+        if (circleSprite != null) return circleSprite;
+
+        const int size = 64;
+        var tex = new Texture2D(size, size, TextureFormat.RGBA32, false) { wrapMode = TextureWrapMode.Clamp };
+        var pixels = new Color32[size * size];
+        Vector2 center = new Vector2(size / 2f, size / 2f);
+        float radius = size / 2f - 1.5f;
+        for (int y = 0; y < size; y++)
+        {
+            for (int x = 0; x < size; x++)
+            {
+                float d = Vector2.Distance(new Vector2(x + 0.5f, y + 0.5f), center);
+                float a = Mathf.Clamp01(radius - d + 1.5f);
+                pixels[y * size + x] = new Color(1f, 1f, 1f, a);
+            }
+        }
+        tex.SetPixels32(pixels);
+        tex.Apply();
+        circleSprite = Sprite.Create(tex, new Rect(0f, 0f, size, size), new Vector2(0.5f, 0.5f), size);
+        return circleSprite;
+    }
+
+    public static Image AddCircle(Transform parent, string name, Color color)
+    {
+        var rt = NewUI(name, parent);
+        var img = rt.gameObject.AddComponent<Image>();
+        img.sprite = Circle();
+        img.color = color;
+        return img;
+    }
+
     public static readonly Color PanelColor = new Color(0.12f, 0.15f, 0.22f, 0.97f);
     public static readonly Color Green = new Color(0.25f, 0.6f, 0.35f);
     public static readonly Color Blue = new Color(0.25f, 0.45f, 0.85f);
@@ -59,6 +96,16 @@ public static class UIKit
         rt.anchorMin = Vector2.zero;
         rt.anchorMax = Vector2.one;
         rt.offsetMin = rt.offsetMax = Vector2.zero;
+    }
+
+    // Pins a RectTransform by anchors + offsets in one call, for menus laid out by hand instead of a layout group.
+    public static void Place(RectTransform rt, Vector2 anchorMin, Vector2 anchorMax, Vector2 offsetMin, Vector2 offsetMax, Vector2 pivot)
+    {
+        rt.anchorMin = anchorMin;
+        rt.anchorMax = anchorMax;
+        rt.pivot = pivot;
+        rt.offsetMin = offsetMin;
+        rt.offsetMax = offsetMax;
     }
 
     // Full-screen dimmer.
@@ -153,6 +200,66 @@ public static class UIKit
     {
         var label = button.GetComponentInChildren<Text>();
         if (label != null) label.text = text;
+    }
+
+    // Recolours a button (its highlighted/pressed/selected shades are derived from `color`) - handy for tab
+    // buttons where the active one needs to stand out.
+    public static void SetButtonColors(Button button, Color color)
+    {
+        var colors = button.colors;
+        colors.normalColor = color;
+        colors.highlightedColor = Color.Lerp(color, Color.white, 0.2f);
+        colors.selectedColor = colors.highlightedColor;
+        colors.pressedColor = Color.Lerp(color, Color.black, 0.25f);
+        button.colors = colors;
+    }
+
+    // A standard horizontal slider (background, fill, round handle) between minValue and maxValue.
+    public static Slider AddSlider(Transform parent, float minValue, float maxValue, float value,
+        UnityAction<float> onChange, float height = 56f)
+    {
+        var root = NewUI("Slider", parent);
+        root.gameObject.AddComponent<LayoutElement>().preferredHeight = height;
+
+        var background = NewUI("Background", root);
+        background.anchorMin = new Vector2(0f, 0.35f);
+        background.anchorMax = new Vector2(1f, 0.65f);
+        background.offsetMin = background.offsetMax = Vector2.zero;
+        background.gameObject.AddComponent<Image>().color = new Color(1f, 1f, 1f, 0.15f);
+
+        var fillArea = NewUI("Fill Area", root);
+        fillArea.anchorMin = new Vector2(0f, 0.35f);
+        fillArea.anchorMax = new Vector2(1f, 0.65f);
+        fillArea.offsetMin = new Vector2(10f, 0f);
+        fillArea.offsetMax = new Vector2(-10f, 0f);
+
+        var fill = NewUI("Fill", fillArea);
+        fill.anchorMin = Vector2.zero;
+        fill.anchorMax = new Vector2(0.5f, 1f);
+        fill.sizeDelta = Vector2.zero;
+        fill.gameObject.AddComponent<Image>().color = Blue;
+
+        // A slide area with no height of its own (a line through the middle): the slider stretches the handle to the
+        // area's height, so with a zero height the handle is exactly as tall as its sizeDelta - a round knob.
+        var handleArea = NewUI("Handle Slide Area", root);
+        handleArea.anchorMin = new Vector2(0f, 0.5f);
+        handleArea.anchorMax = new Vector2(1f, 0.5f);
+        handleArea.offsetMin = new Vector2(10f, 0f);
+        handleArea.offsetMax = new Vector2(-10f, 0f);
+
+        var handle = AddCircle(handleArea, "Handle", Color.white);
+        handle.rectTransform.sizeDelta = new Vector2(height * 0.8f, height * 0.8f);
+
+        var slider = root.gameObject.AddComponent<Slider>();
+        slider.fillRect = fill;
+        slider.handleRect = handle.rectTransform;
+        slider.targetGraphic = handle;
+        slider.direction = Slider.Direction.LeftToRight;
+        slider.minValue = minValue;
+        slider.maxValue = maxValue;
+        slider.value = value;
+        if (onChange != null) slider.onValueChanged.AddListener(onChange);
+        return slider;
     }
 
     public static InputField AddInputField(Transform parent, string placeholder, float height = 76f)

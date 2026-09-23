@@ -7,7 +7,7 @@ using UnityEngine.UI;
 public class HealthBar : MonoBehaviour
 {
     const float Width = 120f, Height = 14f;   // in canvas pixels; the canvas is scaled to 0.01 so this is 1.2 m x 14 cm
-    const float HeightAbove = 2.2f;
+    const float HeightAbove = 2.5f;
 
     PlayerController player;
     Transform canvasTransform;

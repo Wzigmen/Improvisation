@@ -5,13 +5,15 @@ using UnityEngine.UI;
 
 // The ability cards on screen.
 //  - Four slots sit in the bottom-right corner (keys 1-4). They start empty; a card put into a slot is shown there.
-//  - Press C (or click the "Карты" icon) to open the card panel: the mouse cursor is freed and all the cards are laid
-//    out in a scrollable panel. Drag a card onto a slot to equip it (or click it to fill the first free slot), drag
-//    a card from one slot to another to swap, drag it back onto the panel (or press its ×) to take it out.
+//  - Two smaller item slots sit in the bottom-left corner. Items are passive (no key) - see PlayerItems.
+//  - Press C (or click the "Карты" icon) to open the panel: the mouse cursor is freed and every ability card, then
+//    every item, is laid out in a scrollable grid. Drag a card onto its slot to equip it (or click it to fill the
+//    first free slot), drag between slots to swap, drag back onto the panel (or press its ×) to take it out.
 // Built in code like the other menus.
 public class AbilityUI : MonoBehaviour
 {
-    const float SlotCardScale = 0.55f;   // cards in the slots
+    const float SlotCardScale = 0.55f;   // cards in the ability slots
+    const float ItemSlotScale = 0.42f;   // cards in the item slots - smaller than the ability ones
     const float PanelCardScale = 0.9f;   // cards in the panel and under the mouse while dragging
     const float SlotGap = 8f;
 
@@ -40,11 +42,37 @@ public class AbilityUI : MonoBehaviour
         public int Shown = -2;            // which card is built into the slot right now (-1 = none)
     }
 
+    class ItemCardView
+    {
+        public ItemInfo Info;
+        public RectTransform Root;
+        public CanvasGroup Group;
+        public Image Frame;
+        public RectTransform TagRoot;     // "В СЛОТЕ 2" pill on the cards of the panel
+        public Text Tag;
+        public int TagSlot = -2;
+    }
+
+    class ItemSlotView
+    {
+        public RectTransform Root;
+        public Image Background;
+        public RectTransform Holder;
+        public GameObject Empty;
+        public GameObject Remove;
+        public ItemCardView Card;
+        public int Shown = -2;
+    }
+
     static readonly Color DashReady = new Color(0.35f, 0.85f, 1f);
     static readonly Color DashCooling = new Color(0.3f, 0.4f, 0.5f);
 
     RectTransform canvasRect;
     RectTransform iconButton, slotsRoot, hintLabel, panel, dragLayer, ghost;
+    Button[] panelTabButtons;       // "Способности" / "Предметы", at the top of the panel
+    RectTransform[] panelContents;  // one scrollable grid per tab; only the active one is shown
+    ScrollRect panelScroll;
+    int panelTab;
     RectTransform dashIcon, dashShade;     // the Ctrl dash: not a card, just an icon with its cooldown
     Image dashFrame;
     Text dashShadeText;
@@ -54,12 +82,19 @@ public class AbilityUI : MonoBehaviour
     SlotView[] slots;
     CardView[] collection;
 
+    RectTransform itemSlotsRoot;
+    CanvasGroup itemSlotsGroup;
+    ItemSlotView[] itemSlots;
+    ItemCardView[] itemCollection;
+
     bool open;
     float openProgress;
 
     // drag and drop
     int dragAbility = -1;
     int dragFromSlot = -1;
+    int dragItem = -1;
+    int dragFromItemSlot = -1;
     CanvasGroup dragSource;
 
     PlayerController local;
@@ -96,6 +131,7 @@ public class AbilityUI : MonoBehaviour
         bool showHud = inGame && !FittingRoom.Active;
         SetShown(iconButton, showHud);
         SetShown(slotsRoot, showHud);
+        SetShown(itemSlotsRoot, showHud);
         SetShown(dashIcon, showHud);
         if (showHud) UpdateDashIcon();
 
@@ -119,7 +155,12 @@ public class AbilityUI : MonoBehaviour
 
         var abilities = local != null ? local.Abilities : null;
         UpdateSlots(abilities, showHud);
-        if (panelVisible) UpdateCollection(abilities);
+        UpdateItemSlots();
+        if (panelVisible)
+        {
+            UpdateCollection(abilities);
+            UpdateItemCollection();
+        }
 
         if (toast.gameObject.activeSelf && Time.unscaledTime > toastUntil) toast.gameObject.SetActive(false);
     }
@@ -139,7 +180,7 @@ public class AbilityUI : MonoBehaviour
         {
             CancelDrag();
             // Give the mouse back to the game unless another menu (or the pause menu) still needs it.
-            if (NetworkGame.InGame && !PauseMenu.IsPaused && !PauseMenu.UiWantsCursor)
+            if (NetworkGame.InGame && !PauseMenu.IsPaused && !PauseMenu.UiWantsCursor && !PauseMenu.AdminOpen)
                 PauseMenu.SetCursorCaptured(true);
         }
     }
@@ -238,7 +279,7 @@ public class AbilityUI : MonoBehaviour
     void UpdateSlots(PlayerAbilities abilities, bool inGame)
     {
         slotsGroup.blocksRaycasts = open;
-        SetShown(hintLabel, inGame && !open && AbilityLoadout.AllEmpty());
+        SetShown(hintLabel, inGame && !open && (AbilityLoadout.AllEmpty() || ItemLoadout.AllEmpty()));
 
         Vector2 mouse = Mouse.current != null ? Mouse.current.position.ReadValue() : Vector2.zero;
 
@@ -310,11 +351,61 @@ public class AbilityUI : MonoBehaviour
         slot.Remove.transform.SetAsLastSibling(); // the × stays on top of the card
     }
 
+    // ---- per frame: item slots and cards (items have no cooldown, so this is a lot simpler) ---
+
+    void UpdateItemSlots()
+    {
+        itemSlotsGroup.blocksRaycasts = open;
+        Vector2 mouse = Mouse.current != null ? Mouse.current.position.ReadValue() : Vector2.zero;
+
+        for (int i = 0; i < itemSlots.Length; i++)
+        {
+            var slot = itemSlots[i];
+            int item = ItemLoadout.Get(i);
+            if (slot.Shown != item) RebuildItemSlot(slot, item, i);
+
+            if (slot.Remove.activeSelf != (item >= 0 && open && dragItem < 0))
+                slot.Remove.SetActive(item >= 0 && open && dragItem < 0);
+
+            bool hover = dragItem >= 0 && RectTransformUtility.RectangleContainsScreenPoint(slot.Root, mouse, null);
+            slot.Background.color = hover ? SlotHover : SlotIdle;
+        }
+    }
+
+    void UpdateItemCollection()
+    {
+        foreach (var card in itemCollection)
+        {
+            int slot = ItemLoadout.SlotOf((int)card.Info.Id);
+            if (card.TagSlot != slot)
+            {
+                card.TagSlot = slot;
+                card.TagRoot.gameObject.SetActive(slot >= 0);
+                if (slot >= 0) card.Tag.text = "В СЛОТЕ " + (slot + 1);
+            }
+        }
+    }
+
+    void RebuildItemSlot(ItemSlotView slot, int item, int index)
+    {
+        if (slot.Card != null) Destroy(slot.Card.Root.gameObject);
+        slot.Card = null;
+        slot.Shown = item;
+        slot.Empty.SetActive(item < 0);
+        if (item < 0) return;
+
+        var card = BuildItemCard(slot.Holder, ItemCatalog.All[item], ItemSlotScale, false);
+        UIKit.Stretch(card.Root);
+        card.Root.gameObject.AddComponent<ItemCardHandle>().Init(this, item, index, card.Group);
+        slot.Card = card;
+        slot.Remove.transform.SetAsLastSibling();
+    }
+
     // ---- drag and drop ------------------------------------------------------------------------
 
     public void BeginDrag(int ability, int fromSlot, CanvasGroup source)
     {
-        if (!open || dragAbility >= 0) return;
+        if (!open || dragAbility >= 0 || dragItem >= 0) return;
 
         dragAbility = ability;
         dragFromSlot = fromSlot;
@@ -348,6 +439,8 @@ public class AbilityUI : MonoBehaviour
         dragSource = null;
         dragAbility = -1;
         dragFromSlot = -1;
+        dragItem = -1;
+        dragFromItemSlot = -1;
     }
 
     // slot >= 0: a card was dropped on that slot; slot -1: it was dropped on the panel.
@@ -383,6 +476,58 @@ public class AbilityUI : MonoBehaviour
         toastUntil = Time.unscaledTime + 3f;
     }
 
+    // ---- items: the same dragging/clicking, against ItemLoadout instead -----------------------
+
+    public void BeginItemDrag(int item, int fromSlot, CanvasGroup source)
+    {
+        if (!open || dragAbility >= 0 || dragItem >= 0) return;
+
+        dragItem = item;
+        dragFromItemSlot = fromSlot;
+        dragSource = source;
+        if (dragSource != null) dragSource.alpha = 0.35f;
+
+        var view = BuildItemCard(dragLayer, ItemCatalog.All[item], PanelCardScale, false);
+        view.Root.anchorMin = view.Root.anchorMax = view.Root.pivot = new Vector2(0.5f, 0.5f);
+        view.Root.localRotation = Quaternion.Euler(0f, 0f, 3f);
+        view.Group.alpha = 0.92f;
+        view.Group.blocksRaycasts = false;
+        view.Group.interactable = false;
+        view.TagRoot.gameObject.SetActive(false);
+        ghost = view.Root;
+    }
+
+    public void DropItem(int slot)
+    {
+        if (dragItem < 0) return;
+
+        if (slot >= 0) ItemLoadout.Set(slot, dragItem);
+        else if (dragFromItemSlot >= 0) ItemLoadout.Clear(dragFromItemSlot);
+    }
+
+    public void ClickItemCard(int item, int fromSlot)
+    {
+        if (!open || fromSlot >= 0) return;
+
+        int equippedSlot = ItemLoadout.SlotOf(item);
+        if (equippedSlot >= 0)
+        {
+            ItemLoadout.Clear(equippedSlot);
+            return;
+        }
+
+        int free = ItemLoadout.FirstEmpty();
+        if (free >= 0)
+        {
+            ItemLoadout.Set(free, item);
+            return;
+        }
+
+        toast.text = "Оба слота вещей заняты: перетащите вещь прямо на нужный слот.";
+        toast.gameObject.SetActive(true);
+        toastUntil = Time.unscaledTime + 3f;
+    }
+
     // ---- building the UI ----------------------------------------------------------------------
 
     void BuildUI()
@@ -391,6 +536,7 @@ public class AbilityUI : MonoBehaviour
         canvasRect = (RectTransform)canvas.transform;
 
         BuildSlots(canvas.transform);
+        BuildItemSlots(canvas.transform);
         BuildPanel(canvas.transform);
         BuildIcon(canvas.transform);
         BuildDashIcon(canvas.transform);
@@ -417,7 +563,7 @@ public class AbilityUI : MonoBehaviour
             slots[i] = BuildSlot(slotsRoot, i, w, h);
 
         // A hint above the slots while nothing is equipped yet.
-        var hint = UIKit.AddLabel(parent, "C — выбрать способности", 26, FontStyle.Bold, new Color(1f, 1f, 1f, 0.9f), 36f, TextAnchor.LowerRight);
+        var hint = UIKit.AddLabel(parent, "C — способности и вещи", 26, FontStyle.Bold, new Color(1f, 1f, 1f, 0.9f), 36f, TextAnchor.LowerRight);
         hintLabel = hint.rectTransform;
         hintLabel.anchorMin = hintLabel.anchorMax = new Vector2(1f, 0f);
         hintLabel.pivot = new Vector2(1f, 0f);
@@ -427,6 +573,70 @@ public class AbilityUI : MonoBehaviour
         shadow.effectColor = new Color(0f, 0f, 0f, 0.8f);
         shadow.effectDistance = new Vector2(2f, -2f);
         hintLabel.gameObject.SetActive(false);
+    }
+
+    // Two smaller slots in the opposite corner (bottom-left) for the passive items.
+    void BuildItemSlots(Transform parent)
+    {
+        float w = 224f * ItemSlotScale;
+        float h = 330f * ItemSlotScale;
+
+        itemSlotsRoot = UIKit.NewUI("ItemSlots", parent);
+        itemSlotsRoot.anchorMin = itemSlotsRoot.anchorMax = new Vector2(0f, 0f);
+        itemSlotsRoot.pivot = new Vector2(0f, 0f);
+        itemSlotsRoot.anchoredPosition = new Vector2(24f, 24f);
+        itemSlotsRoot.sizeDelta = new Vector2(ItemLoadout.SlotCount * w + (ItemLoadout.SlotCount - 1) * SlotGap, h);
+        itemSlotsGroup = itemSlotsRoot.gameObject.AddComponent<CanvasGroup>();
+
+        itemSlots = new ItemSlotView[ItemLoadout.SlotCount];
+        for (int i = 0; i < itemSlots.Length; i++)
+            itemSlots[i] = BuildItemSlot(itemSlotsRoot, i, w, h);
+    }
+
+    ItemSlotView BuildItemSlot(RectTransform parent, int index, float w, float h)
+    {
+        var slot = new ItemSlotView();
+
+        slot.Root = UIKit.NewUI("ItemSlot" + (index + 1), parent);
+        slot.Root.anchorMin = slot.Root.anchorMax = slot.Root.pivot = new Vector2(0f, 0f);
+        slot.Root.anchoredPosition = new Vector2(index * (w + SlotGap), 0f);
+        slot.Root.sizeDelta = new Vector2(w, h);
+
+        slot.Background = slot.Root.gameObject.AddComponent<Image>();
+        slot.Background.color = SlotIdle;
+        var border = slot.Root.gameObject.AddComponent<Outline>();
+        border.effectColor = new Color(1f, 1f, 1f, 0.3f);
+        border.effectDistance = new Vector2(2f, -2f);
+        slot.Root.gameObject.AddComponent<ItemDropTarget>().Init(this, index);
+
+        var empty = UIKit.AddLabel(slot.Root, "Вещь\n<size=16>пусто</size>", 24, FontStyle.Bold, new Color(1f, 1f, 1f, 0.32f), 70f);
+        UIKit.Stretch(empty.rectTransform);
+        slot.Empty = empty.gameObject;
+
+        slot.Holder = UIKit.NewUI("Holder", slot.Root);
+        UIKit.Stretch(slot.Holder);
+
+        var remove = UIKit.NewUI("Remove", slot.Root);
+        remove.anchorMin = remove.anchorMax = remove.pivot = new Vector2(1f, 0f);
+        remove.anchoredPosition = new Vector2(-3f, 3f);
+        remove.sizeDelta = new Vector2(22f, 22f);
+        var removeImage = remove.gameObject.AddComponent<Image>();
+        removeImage.color = Color.white;
+        var button = remove.gameObject.AddComponent<Button>();
+        button.targetGraphic = removeImage;
+        var colors = button.colors;
+        colors.normalColor = new Color(0.75f, 0.25f, 0.25f, 0.95f);
+        colors.highlightedColor = new Color(0.95f, 0.35f, 0.35f, 1f);
+        colors.pressedColor = new Color(0.55f, 0.15f, 0.15f, 1f);
+        colors.selectedColor = colors.normalColor;
+        button.colors = colors;
+        button.onClick.AddListener(() => ItemLoadout.Clear(index));
+        var cross = UIKit.AddLabel(remove, "×", 18, FontStyle.Bold, Color.white, 22f);
+        UIKit.Stretch(cross.rectTransform);
+        slot.Remove = remove.gameObject;
+        slot.Remove.SetActive(false);
+
+        return slot;
     }
 
     SlotView BuildSlot(RectTransform parent, int index, float w, float h)
@@ -547,19 +757,38 @@ public class AbilityUI : MonoBehaviour
         panel.gameObject.AddComponent<Image>().color = new Color(0.09f, 0.11f, 0.18f, 0.96f);
         panel.gameObject.AddComponent<Outline>().effectColor = new Color(1f, 1f, 1f, 0.15f);
         panelGroup = panel.gameObject.AddComponent<CanvasGroup>();
-        // Dropping a card from a slot anywhere on the panel takes it out of the slot.
+        // Dropping a card from a slot anywhere on the panel takes it out of the slot (each drop target only
+        // reacts to its own kind of drag, so both can sit on the same panel).
         panel.gameObject.AddComponent<AbilityDropTarget>().Init(this, -1);
+        panel.gameObject.AddComponent<ItemDropTarget>().Init(this, -1);
 
-        var title = UIKit.AddLabel(panel, "Способности", 40, FontStyle.Bold, Color.white, 46f, TextAnchor.MiddleLeft);
+        var title = UIKit.AddLabel(panel, "Способности и вещи", 40, FontStyle.Bold, Color.white, 46f, TextAnchor.MiddleLeft);
         Place(title.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(24f, -56f), new Vector2(-24f, -10f), new Vector2(0.5f, 1f));
 
+        // Tabs at the top of this same panel switch which grid is shown below.
+        var tabsRow = UIKit.NewUI("Tabs", panel);
+        Place(tabsRow, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(24f, -96f), new Vector2(-24f, -60f), new Vector2(0.5f, 1f));
+        var tabsLayout = tabsRow.gameObject.AddComponent<HorizontalLayoutGroup>();
+        tabsLayout.spacing = 10f;
+        tabsLayout.childAlignment = TextAnchor.MiddleLeft;
+        tabsLayout.childControlWidth = true;
+        tabsLayout.childControlHeight = true;
+        tabsLayout.childForceExpandWidth = false;
+        tabsLayout.childForceExpandHeight = true;
+
+        panelTabButtons = new Button[2];
+        panelTabButtons[0] = UIKit.AddButton(tabsRow, "Способности", UIKit.Blue, () => ShowPanelTab(0), 36f, 24);
+        panelTabButtons[0].GetComponent<LayoutElement>().preferredWidth = 240f;
+        panelTabButtons[1] = UIKit.AddButton(tabsRow, "Предметы", UIKit.Gray, () => ShowPanelTab(1), 36f, 24);
+        panelTabButtons[1].GetComponent<LayoutElement>().preferredWidth = 220f;
+
         var hint = UIKit.AddLabel(panel,
-            "Перетащите карточку на слот справа внизу (клик по карточке — в первый свободный слот). C — закрыть.",
+            "Перетащите карточку на её слот внизу экрана (клик — в первый свободный). C — закрыть.",
             22, FontStyle.Normal, new Color(1f, 1f, 1f, 0.65f), 28f, TextAnchor.MiddleLeft);
-        Place(hint.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(24f, -88f), new Vector2(-24f, -56f), new Vector2(0.5f, 1f));
+        Place(hint.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(24f, -126f), new Vector2(-24f, -100f), new Vector2(0.5f, 1f));
 
         toast = UIKit.AddLabel(panel, "", 24, FontStyle.Bold, new Color(1f, 0.85f, 0.35f), 30f, TextAnchor.MiddleRight);
-        Place(toast.rectTransform, new Vector2(0.35f, 1f), new Vector2(1f, 1f), new Vector2(0f, -56f), new Vector2(-24f, -14f), new Vector2(0.5f, 1f));
+        Place(toast.rectTransform, new Vector2(0.5f, 1f), new Vector2(1f, 1f), new Vector2(0f, -126f), new Vector2(-24f, -100f), new Vector2(0.5f, 1f));
         toast.gameObject.SetActive(false);
 
         // scroll area
@@ -567,37 +796,32 @@ public class AbilityUI : MonoBehaviour
         scrollRect.anchorMin = Vector2.zero;
         scrollRect.anchorMax = Vector2.one;
         scrollRect.offsetMin = new Vector2(20f, 20f);
-        scrollRect.offsetMax = new Vector2(-44f, -96f);
+        scrollRect.offsetMax = new Vector2(-44f, -136f);
         scrollRect.gameObject.AddComponent<Image>().color = new Color(0f, 0f, 0f, 0.18f);
 
         var viewport = UIKit.NewUI("Viewport", scrollRect);
         UIKit.Stretch(viewport);
         viewport.gameObject.AddComponent<RectMask2D>();
 
-        var content = UIKit.NewUI("Content", viewport);
-        content.anchorMin = new Vector2(0f, 1f);
-        content.anchorMax = new Vector2(1f, 1f);
-        content.pivot = new Vector2(0.5f, 1f);
-        content.offsetMin = content.offsetMax = Vector2.zero;
-        // An invisible image so the empty gaps between cards can also be grabbed to scroll.
-        content.gameObject.AddComponent<Image>().color = new Color(0f, 0f, 0f, 0f);
-
-        var grid = content.gameObject.AddComponent<GridLayoutGroup>();
-        grid.cellSize = new Vector2(224f * PanelCardScale, 330f * PanelCardScale);
-        grid.spacing = new Vector2(16f, 16f);
-        grid.padding = new RectOffset(12, 12, 12, 12);
-        grid.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
-        grid.constraintCount = 6;
-        grid.childAlignment = TextAnchor.UpperCenter;
-        content.gameObject.AddComponent<ContentSizeFitter>().verticalFit = ContentSizeFitter.FitMode.PreferredSize;
-
+        var abilityContent = BuildScrollGrid(viewport, "AbilityContent");
         collection = new CardView[AbilityCatalog.All.Length];
         for (int i = 0; i < collection.Length; i++)
         {
-            var view = BuildCard(content, AbilityCatalog.All[i], PanelCardScale, 0, true);
+            var view = BuildCard(abilityContent, AbilityCatalog.All[i], PanelCardScale, 0, true);
             view.Root.gameObject.AddComponent<AbilityCardHandle>().Init(this, i, -1, view.Group);
             collection[i] = view;
         }
+
+        var itemContent = BuildScrollGrid(viewport, "ItemContent");
+        itemCollection = new ItemCardView[ItemCatalog.All.Length];
+        for (int i = 0; i < itemCollection.Length; i++)
+        {
+            var view = BuildItemCard(itemContent, ItemCatalog.All[i], PanelCardScale, true);
+            view.Root.gameObject.AddComponent<ItemCardHandle>().Init(this, i, -1, view.Group);
+            itemCollection[i] = view;
+        }
+        itemContent.gameObject.SetActive(false);
+        panelContents = new[] { abilityContent, itemContent };
 
         // scrollbar
         var barRect = UIKit.NewUI("Scrollbar", panel);
@@ -605,7 +829,7 @@ public class AbilityUI : MonoBehaviour
         barRect.anchorMax = new Vector2(1f, 1f);
         barRect.pivot = new Vector2(1f, 1f);
         barRect.offsetMin = new Vector2(-34f, 20f);
-        barRect.offsetMax = new Vector2(-14f, -96f);
+        barRect.offsetMax = new Vector2(-14f, -136f);
         barRect.gameObject.AddComponent<Image>().color = new Color(0f, 0f, 0f, 0.35f);
 
         var sliding = UIKit.NewUI("Sliding Area", barRect);
@@ -620,17 +844,52 @@ public class AbilityUI : MonoBehaviour
         bar.targetGraphic = handleImage;
         bar.direction = Scrollbar.Direction.BottomToTop;
 
-        var scroll = scrollRect.gameObject.AddComponent<ScrollRect>();
-        scroll.viewport = viewport;
-        scroll.content = content;
-        scroll.horizontal = false;
-        scroll.vertical = true;
-        scroll.movementType = ScrollRect.MovementType.Clamped;
-        scroll.scrollSensitivity = 40f;
-        scroll.verticalScrollbar = bar;
-        scroll.verticalScrollbarVisibility = ScrollRect.ScrollbarVisibility.Permanent;
+        panelScroll = scrollRect.gameObject.AddComponent<ScrollRect>();
+        panelScroll.viewport = viewport;
+        panelScroll.content = abilityContent;
+        panelScroll.horizontal = false;
+        panelScroll.vertical = true;
+        panelScroll.movementType = ScrollRect.MovementType.Clamped;
+        panelScroll.scrollSensitivity = 40f;
+        panelScroll.verticalScrollbar = bar;
+        panelScroll.verticalScrollbarVisibility = ScrollRect.ScrollbarVisibility.Permanent;
 
+        ShowPanelTab(0);
         panel.gameObject.SetActive(false);
+    }
+
+    // Switches which grid the scroll view shows: 0 = abilities, 1 = items.
+    void ShowPanelTab(int index)
+    {
+        panelTab = index;
+        for (int i = 0; i < panelTabButtons.Length; i++)
+            UIKit.SetButtonColors(panelTabButtons[i], i == index ? UIKit.Blue : UIKit.Gray);
+        for (int i = 0; i < panelContents.Length; i++)
+            panelContents[i].gameObject.SetActive(i == index);
+        panelScroll.content = panelContents[index];
+        panelScroll.verticalNormalizedPosition = 1f;
+    }
+
+    // A scrollable grid of cards, ready to be used directly as a ScrollRect's content.
+    static RectTransform BuildScrollGrid(Transform parent, string name)
+    {
+        var content = UIKit.NewUI(name, parent);
+        content.anchorMin = new Vector2(0f, 1f);
+        content.anchorMax = new Vector2(1f, 1f);
+        content.pivot = new Vector2(0.5f, 1f);
+        content.offsetMin = content.offsetMax = Vector2.zero;
+        // An invisible image so the empty gaps between cards can also be grabbed to scroll.
+        content.gameObject.AddComponent<Image>().color = new Color(0f, 0f, 0f, 0f);
+
+        var layout = content.gameObject.AddComponent<GridLayoutGroup>();
+        layout.cellSize = new Vector2(224f * PanelCardScale, 330f * PanelCardScale);
+        layout.spacing = new Vector2(16f, 16f);
+        layout.padding = new RectOffset(12, 12, 12, 12);
+        layout.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
+        layout.constraintCount = 6;
+        layout.childAlignment = TextAnchor.UpperCenter;
+        content.gameObject.AddComponent<ContentSizeFitter>().verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+        return content;
     }
 
     // One card. `slotNumber` > 0 puts the key badge on it (cards in the slots); `collection` cards show the description
@@ -745,6 +1004,247 @@ public class AbilityUI : MonoBehaviour
         return view;
     }
 
+    // One item card: title, a drawn icon in the middle, a one-line stat and (in the panel) a description.
+    // Items have no cooldown and no key, so this is simpler than an ability card.
+    static ItemCardView BuildItemCard(Transform parent, ItemInfo info, float k, bool collection)
+    {
+        var view = new ItemCardView { Info = info };
+        int F(float size) => Mathf.Max(6, Mathf.RoundToInt(size * k));
+        Vector2 V(float x, float y) => new Vector2(x * k, y * k);
+
+        view.Root = UIKit.NewUI("Item " + info.Name, parent);
+        view.Root.sizeDelta = new Vector2(224f * k, 330f * k);
+        view.Group = view.Root.gameObject.AddComponent<CanvasGroup>();
+
+        var frameRect = UIKit.NewUI("Frame", view.Root);
+        UIKit.Stretch(frameRect);
+        view.Frame = frameRect.gameObject.AddComponent<Image>();
+        view.Frame.color = info.Color;
+
+        var body = UIKit.NewUI("Body", frameRect);
+        UIKit.Stretch(body);
+        body.offsetMin = V(6f, 6f);
+        body.offsetMax = V(-6f, -6f);
+        body.gameObject.AddComponent<Image>().color = new Color(0.09f, 0.11f, 0.17f, 0.98f);
+
+        var title = UIKit.AddLabel(body, info.Name, F(24), FontStyle.Bold, info.Color, 46f * k);
+        Place(title.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), V(10f, -50f), V(-10f, -8f), new Vector2(0.5f, 1f));
+        title.resizeTextForBestFit = true;
+        title.resizeTextMinSize = F(14);
+        title.resizeTextMaxSize = F(24);
+        title.horizontalOverflow = HorizontalWrapMode.Wrap;
+        title.verticalOverflow = VerticalWrapMode.Truncate;
+
+        view.TagRoot = UIKit.NewUI("SlotTag", body);
+        view.TagRoot.anchorMin = view.TagRoot.anchorMax = view.TagRoot.pivot = new Vector2(0.5f, 1f);
+        view.TagRoot.anchoredPosition = V(0f, -50f);
+        view.TagRoot.sizeDelta = V(150f, 32f);
+        view.TagRoot.gameObject.AddComponent<Image>().color = new Color(0.25f, 0.6f, 0.35f, 0.95f);
+        view.Tag = UIKit.AddLabel(view.TagRoot, "", F(18), FontStyle.Bold, Color.white, 32f * k);
+        UIKit.Stretch(view.Tag.rectTransform);
+        view.TagRoot.gameObject.SetActive(false);
+
+        // the icon, drawn to match what the item is
+        var iconArea = UIKit.NewUI("Icon", body);
+        if (collection) Place(iconArea, new Vector2(0f, 0.42f), new Vector2(1f, 0.78f), Vector2.zero, Vector2.zero, new Vector2(0.5f, 0.5f));
+        else Place(iconArea, new Vector2(0f, 0.34f), new Vector2(1f, 0.80f), Vector2.zero, Vector2.zero, new Vector2(0.5f, 0.5f));
+        DrawItemIcon(info.Id, iconArea, k);
+
+        var caption = UIKit.AddLabel(body, info.Caption, F(20), FontStyle.Bold, info.Color, 28f * k);
+        if (collection) Place(caption.rectTransform, new Vector2(0f, 0.32f), new Vector2(1f, 0.42f), Vector2.zero, Vector2.zero, new Vector2(0.5f, 0.5f));
+        else Place(caption.rectTransform, new Vector2(0f, 0.10f), new Vector2(1f, 0.34f), V(4f, 0f), V(-4f, 0f), new Vector2(0.5f, 0.5f));
+        caption.resizeTextForBestFit = true;
+        caption.resizeTextMinSize = F(11);
+        caption.resizeTextMaxSize = F(20);
+        caption.horizontalOverflow = HorizontalWrapMode.Wrap;
+
+        if (collection)
+        {
+            var description = UIKit.AddLabel(body, info.Description, F(19), FontStyle.Normal, new Color(1f, 1f, 1f, 0.85f), 100f * k, TextAnchor.UpperCenter);
+            Place(description.rectTransform, new Vector2(0f, 0f), new Vector2(1f, 0.32f), V(10f, 6f), V(-10f, -2f), new Vector2(0.5f, 0.5f));
+            description.resizeTextForBestFit = true;
+            description.resizeTextMinSize = F(12);
+            description.resizeTextMaxSize = F(19);
+        }
+
+        return view;
+    }
+
+    // A small round dot (see UIKit.Circle), positioned and sized like Bar so icons can mix rectangles and circles.
+    static Image Dot(RectTransform parent, Vector2 position, float diameter, Color color)
+    {
+        var img = UIKit.AddCircle(parent, "Dot", color);
+        var rt = img.rectTransform;
+        rt.anchorMin = rt.anchorMax = rt.pivot = new Vector2(0.5f, 0.5f);
+        rt.anchoredPosition = position;
+        rt.sizeDelta = new Vector2(diameter, diameter);
+        img.raycastTarget = false;
+        return img;
+    }
+
+    // Every item's little picture, built from rectangles (Bar) and circles (Dot) so it reads as what the item is
+    // at a glance, without needing any imported art. Coordinates are in the card's own reference units (multiplied
+    // by k, same as everything else on the card), (0,0) at the middle of the icon area.
+    static void DrawItemIcon(ItemId id, RectTransform area, float k)
+    {
+        const float scale = 0.8f;   // shrinks every icon a touch so nothing clips against the card's title
+        Vector2 P(float x, float y) => new Vector2(x * k * scale, y * k * scale);
+        Vector2 S(float w, float h) => new Vector2(w * k * scale, h * k * scale);
+
+        switch (id)
+        {
+            case ItemId.Sneakers:
+            {
+                Color sole = new Color(1f, 0.55f, 0.2f);
+                Color body = new Color(0.95f, 0.96f, 0.98f);
+                Color trim = new Color(0.82f, 0.85f, 0.9f);
+                Color quill = new Color(0.55f, 0.4f, 0.25f);
+                Color frond = new Color(0.98f, 0.92f, 0.75f);
+
+                Bar(area, P(-50f, 20f), S(46f, 5f), 55f, quill);
+                Bar(area, P(-64f, 44f), S(22f, 6f), 80f, frond);
+                Bar(area, P(-56f, 48f), S(22f, 6f), 55f, frond);
+                Bar(area, P(-48f, 43f), S(22f, 6f), 30f, frond);
+                Bar(area, P(0f, -38f), S(112f, 18f), 0f, sole);
+                Bar(area, P(-6f, -14f), S(98f, 40f), 0f, body);
+                Bar(area, P(34f, -10f), S(30f, 26f), 14f, trim);
+                Bar(area, P(-46f, 4f), S(26f, 30f), -8f, trim);
+                break;
+            }
+            case ItemId.Knuckles:
+            {
+                Color skin = new Color(0.95f, 0.75f, 0.55f);
+                Color cuff = new Color(0.15f, 0.15f, 0.18f);
+                Color cyan = new Color(0.45f, 0.85f, 0.95f);
+
+                Bar(area, P(50f, 16f), S(40f, 8f), -18f, new Color(cyan.r, cyan.g, cyan.b, 0.55f));
+                Bar(area, P(56f, -2f), S(44f, 8f), -6f, new Color(cyan.r, cyan.g, cyan.b, 0.75f));
+                Bar(area, P(50f, -18f), S(36f, 8f), 10f, cyan);
+                Bar(area, P(-38f, -30f), S(46f, 26f), 20f, cuff);
+                Dot(area, P(4f, -4f), 74f, skin);
+                Dot(area, P(-14f, 26f), 22f, skin);
+                Dot(area, P(10f, 30f), 22f, skin);
+                Dot(area, P(32f, 20f), 20f, skin);
+                break;
+            }
+            case ItemId.IronFist:
+            {
+                Color steel = new Color(0.62f, 0.65f, 0.7f);
+                Color dark = new Color(0.38f, 0.4f, 0.45f);
+                Color burst = new Color(1f, 0.55f, 0.2f, 0.5f);
+
+                Bar(area, P(0f, 0f), S(100f, 100f), 0f, burst);
+                Bar(area, P(0f, 0f), S(100f, 100f), 45f, burst);
+                Bar(area, P(-40f, -32f), S(48f, 26f), 18f, new Color(0.18f, 0.18f, 0.2f));
+                Dot(area, P(0f, -6f), 78f, steel);
+                Dot(area, P(-20f, 26f), 20f, dark);
+                Dot(area, P(4f, 32f), 22f, dark);
+                Dot(area, P(28f, 20f), 18f, dark);
+                break;
+            }
+            case ItemId.ManaCrystal:
+            {
+                Color glow = new Color(0.6f, 0.4f, 0.95f, 0.28f);
+                Color gem = new Color(0.55f, 0.3f, 0.95f);
+                Color facet = new Color(0.85f, 0.75f, 1f);
+
+                Dot(area, P(0f, 0f), 120f, glow);
+                Bar(area, P(0f, -46f), S(14f, 26f), 45f, new Color(gem.r * 0.85f, gem.g * 0.85f, gem.b * 0.85f));
+                Bar(area, P(0f, 0f), S(70f, 70f), 45f, gem);
+                Bar(area, P(-12f, 14f), S(28f, 28f), 45f, facet);
+                break;
+            }
+            case ItemId.StoneSkin:
+            {
+                Color darkStone = new Color(0.35f, 0.35f, 0.4f);
+                Color stone = new Color(0.62f, 0.62f, 0.68f);
+
+                Dot(area, P(0f, -4f), 108f, darkStone);
+                Dot(area, P(0f, 0f), 96f, stone);
+                Dot(area, P(-24f, 18f), 24f, new Color(darkStone.r * 0.9f, darkStone.g * 0.9f, darkStone.b * 0.9f));
+                Dot(area, P(20f, -14f), 22f, new Color(darkStone.r * 0.9f, darkStone.g * 0.9f, darkStone.b * 0.9f));
+                Dot(area, P(-10f, -26f), 16f, new Color(darkStone.r * 0.9f, darkStone.g * 0.9f, darkStone.b * 0.9f));
+                Dot(area, P(-18f, 26f), 18f, new Color(0.8f, 0.8f, 0.85f));
+                break;
+            }
+            case ItemId.Ward:
+            {
+                Color gold = new Color(0.85f, 0.7f, 0.3f);
+                Color teal = new Color(0.3f, 0.8f, 0.8f);
+                Color bg = new Color(0.09f, 0.11f, 0.17f);
+
+                Bar(area, P(-6f, 18f), S(6f, 34f), 12f, gold);
+                Bar(area, P(6f, 18f), S(6f, 34f), -12f, gold);
+                Dot(area, P(0f, 42f), 30f, gold);
+                Dot(area, P(0f, 42f), 16f, bg);
+                Dot(area, P(0f, -10f), 64f, teal);
+                Dot(area, P(-10f, 2f), 18f, new Color(0.75f, 0.95f, 0.95f));
+                break;
+            }
+            case ItemId.VampiricFang:
+            {
+                Color ivory = new Color(0.95f, 0.93f, 0.88f);
+                Color blood = new Color(0.75f, 0.1f, 0.15f);
+
+                Bar(area, P(-14f, 10f), S(20f, 70f), -6f, ivory);
+                Bar(area, P(-14f, -26f), S(20f, 20f), 45f, ivory);
+                Bar(area, P(16f, 16f), S(15f, 50f), 8f, ivory);
+                Bar(area, P(16f, -10f), S(15f, 15f), 45f, ivory);
+                Dot(area, P(-14f, -46f), 16f, blood);
+                break;
+            }
+            case ItemId.Hourglass:
+            {
+                Color glass = new Color(0.85f, 0.93f, 1f, 0.4f);
+                Color frame = new Color(0.7f, 0.5f, 0.2f);
+                Color wood = new Color(0.45f, 0.28f, 0.15f);
+                Color sand = new Color(0.85f, 0.65f, 0.25f);
+
+                Bar(area, P(0f, 32f), S(60f, 34f), 0f, glass);
+                Bar(area, P(0f, -32f), S(60f, 34f), 0f, glass);
+                Bar(area, P(0f, 0f), S(10f, 20f), 0f, glass);
+                Bar(area, P(-16f, 12f), S(30f, 6f), 35f, frame);
+                Bar(area, P(16f, 12f), S(30f, 6f), -35f, frame);
+                Bar(area, P(-16f, -12f), S(30f, 6f), -35f, frame);
+                Bar(area, P(16f, -12f), S(30f, 6f), 35f, frame);
+                Bar(area, P(0f, 52f), S(70f, 10f), 0f, wood);
+                Bar(area, P(0f, -52f), S(70f, 10f), 0f, wood);
+                Dot(area, P(0f, -34f), 20f, sand);
+                break;
+            }
+            case ItemId.HeavyBoots:
+            {
+                Color dark = new Color(0.12f, 0.12f, 0.14f);
+                Color brown = new Color(0.35f, 0.22f, 0.14f);
+                Color strap = new Color(0.6f, 0.45f, 0.3f);
+                Color arrow = new Color(0.7f, 0.72f, 0.78f, 0.85f);
+
+                Bar(area, P(-70f, 10f), S(24f, 6f), 35f, arrow);
+                Bar(area, P(-70f, -6f), S(24f, 6f), -35f, arrow);
+                Bar(area, P(-30f, 26f), S(30f, 50f), 0f, brown);
+                Bar(area, P(-4f, -6f), S(70f, 58f), 0f, brown);
+                Bar(area, P(-30f, 34f), S(34f, 7f), 0f, strap);
+                Bar(area, P(-30f, 16f), S(34f, 7f), 0f, strap);
+                Bar(area, P(30f, -16f), S(26f, 22f), 8f, dark);
+                Bar(area, P(4f, -40f), S(110f, 18f), 0f, dark);
+                break;
+            }
+            case ItemId.LuckyCoin:
+            {
+                Color darkGold = new Color(0.65f, 0.5f, 0.15f);
+                Color gold = new Color(0.95f, 0.78f, 0.25f);
+                Color shine = new Color(1f, 1f, 0.85f, 0.9f);
+
+                Dot(area, P(0f, 0f), 100f, darkGold);
+                Dot(area, P(0f, 0f), 86f, gold);
+                Bar(area, P(-14f, 14f), S(34f, 7f), 45f, shine);
+                Bar(area, P(-14f, 14f), S(34f, 7f), -45f, shine);
+                Dot(area, P(28f, 30f), 14f, shine);
+                break;
+            }
+        }
+    }
+
     static void Place(RectTransform rt, Vector2 anchorMin, Vector2 anchorMax, Vector2 offsetMin, Vector2 offsetMax, Vector2 pivot)
     {
         rt.anchorMin = anchorMin;
@@ -798,4 +1298,48 @@ public class AbilityDropTarget : MonoBehaviour, IDropHandler
     }
 
     public void OnDrop(PointerEventData e) => ui.Drop(slot);
+}
+
+// The item equivalents of AbilityCardHandle / AbilityDropTarget, driving ItemLoadout instead.
+public class ItemCardHandle : MonoBehaviour, IBeginDragHandler, IDragHandler, IEndDragHandler, IPointerClickHandler
+{
+    AbilityUI ui;
+    int item;
+    int slot;               // -1 for the cards of the panel
+    CanvasGroup group;
+
+    public void Init(AbilityUI owner, int itemNumber, int slotIndex, CanvasGroup cardGroup)
+    {
+        ui = owner;
+        item = itemNumber;
+        slot = slotIndex;
+        group = cardGroup;
+    }
+
+    public void OnBeginDrag(PointerEventData e)
+    {
+        if (e.button == PointerEventData.InputButton.Left) ui.BeginItemDrag(item, slot, group);
+    }
+
+    public void OnDrag(PointerEventData e) => ui.MoveGhost(e);
+    public void OnEndDrag(PointerEventData e) => ui.EndDrag();
+
+    public void OnPointerClick(PointerEventData e)
+    {
+        if (e.button == PointerEventData.InputButton.Left) ui.ClickItemCard(item, slot);
+    }
+}
+
+public class ItemDropTarget : MonoBehaviour, IDropHandler
+{
+    AbilityUI ui;
+    int slot;
+
+    public void Init(AbilityUI owner, int slotIndex)
+    {
+        ui = owner;
+        slot = slotIndex;
+    }
+
+    public void OnDrop(PointerEventData e) => ui.DropItem(slot);
 }

@@ -94,6 +94,9 @@ public class CameraFollow : MonoBehaviour
             return;
         }
 
+        // The player's own camera-angle setting, from Settings -> Игра (the fitting room above keeps its own fov).
+        if (cam != null) cam.fieldOfView = GameSettings.CameraFov;
+
         if (target == null)
         {
             yaw += idleSpeed * Time.unscaledDeltaTime;

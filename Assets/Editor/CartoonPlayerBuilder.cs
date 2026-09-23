@@ -27,8 +27,8 @@ public static class CartoonPlayerBuilder
         // Rebuild from scratch so the menu item is safe to run more than once.
         // ("House" is listed only to clear it out of scenes built before it was replaced by the color zone.)
         foreach (var name in new[] { "Player", "Ground", "House", "PunchingBagRig", "ColorZone", "BotZone", "Arena", "RingArena", "RingFloorRoot", "RingFence",
-                                     "ScreenStart", "ScreenRing", "FittingRoom",
-                                     "PauseMenu", "MainMenu", "MatchUI", "AbilityUI", "NetworkGame", "HitEffects", "MobSpawner" })
+                                     "ScreenStart", "ScreenRing", "FittingRoom", "PlayersPodium", "BotsPodium",
+                                     "PauseMenu", "MainMenu", "SettingsMenu", "MenuMusic", "AdminPanel", "MatchUI", "AbilityUI", "NetworkGame", "HitEffects", "MobSpawner" })
             RemoveExisting(name);
 
         Material groundMat = MakeMaterial("Ground", new Color(0.45f, 0.75f, 0.4f));
@@ -47,6 +47,8 @@ public static class CartoonPlayerBuilder
         BuildFittingRoom(BagAnchor + new Vector3(9.5f, 0f, 0f));   // a bit further right of the bag
         BuildColorZone(ZoneCenter, "ColorZone", null, MatchMode.Players);
         BuildColorZone(BotZoneCenter, "BotZone", "ИГРАТЬ\nС БОТОМ", MatchMode.Bots);
+        BuildPodium(GameLayout.PlayersPodiumCenter, "PlayersPodium");
+        BuildPodium(GameLayout.BotsPodiumCenter, "BotsPodium");
         BuildStartField();
         BuildRing();
         BuildScreens();
@@ -86,8 +88,11 @@ public static class CartoonPlayerBuilder
 
     static GameObject BuildCharacterPrefab(string path, string objectName, bool bot)
     {
-        Material bodyMat = MakeMaterial("PlayerBody", new Color(1f, 0.55f, 0.2f));
-        Material footMat = MakeMaterial("PlayerFoot", new Color(0.55f, 0.25f, 0.1f));
+        Material bodyMat = MakeMaterial("PlayerBody", new Color(0.9f, 0.15f, 0.15f));
+        Material footMat = MakeMaterial("PlayerFoot", new Color(0.96f, 0.96f, 0.98f));     // white shoes
+        Material gloveMat = MakeMaterial("PlayerGlove", new Color(0.97f, 0.97f, 1f));      // white gloves
+        Material limbMat = MakeMaterial("PlayerLimb", new Color(0.93f, 0.76f, 0.6f));      // thin skin-coloured arms and legs
+        Material hairMat = MakeMaterial("PlayerHair", new Color(0.09f, 0.06f, 0.05f));
         Material eyeMat = MakeMaterial("PlayerEye", Color.white);
         Material pupilMat = MakeMaterial("PlayerPupil", new Color(0.05f, 0.05f, 0.05f));
 
@@ -95,10 +100,11 @@ public static class CartoonPlayerBuilder
         player.AddComponent<NetworkObject>();
         if (bot) player.AddComponent<BotBrain>();
 
+        // The round body sits on short legs: taller than the old ball that stood right on its feet.
         var controller = player.AddComponent<CharacterController>();
-        controller.height = 1.5f;
+        controller.height = 1.8f;
         controller.radius = 0.5f;
-        controller.center = new Vector3(0f, 0.75f, 0f);
+        controller.center = new Vector3(0f, 0.9f, 0f);
         var playerController = player.AddComponent<PlayerController>();
 
         var netTransform = player.AddComponent<ClientNetworkTransform>();
@@ -115,6 +121,9 @@ public static class CartoonPlayerBuilder
         styleSo.FindProperty("baseMaterial").objectReferenceValue = MakeMaterial("StyleBase", Color.white);
         styleSo.ApplyModifiedPropertiesWithoutUndo();
 
+        // The equipped items: no visuals of their own, just stat modifiers read by PlayerController/PlayerAbilities.
+        player.AddComponent<PlayerItems>();
+
         // The five ability cards (input + host-side effects) and what they look like on the character.
         player.AddComponent<PlayerAbilities>();
         var visuals = player.AddComponent<AbilityVisuals>();
@@ -128,17 +137,54 @@ public static class CartoonPlayerBuilder
         // Body pivot (animated by CartoonWalker); the round mesh and eyes are its children.
         var body = new GameObject("Body").transform;
         body.SetParent(model, false);
+        body.localPosition = new Vector3(0f, BodyLift, 0f);   // everything inside keeps its old coordinates
         Transform bodyMesh = Part("BodyMesh", body, new Vector3(0f, 0.75f, 0f), new Vector3(1.3f, 1.2f, 1.2f), bodyMat);
-        Part("EyeL", body, new Vector3(-0.2f, 0.9f, 0.5f), Vector3.one * 0.3f, eyeMat);
-        Part("EyeR", body, new Vector3(0.2f, 0.9f, 0.5f), Vector3.one * 0.3f, eyeMat);
-        Part("PupilL", body, new Vector3(-0.19f, 0.88f, 0.62f), Vector3.one * 0.14f, pupilMat);
-        Part("PupilR", body, new Vector3(0.19f, 0.88f, 0.62f), Vector3.one * 0.14f, pupilMat);
-        BuildAngryFace(body, pupilMat);
 
-        Transform footL = Part("FootL", model, new Vector3(-0.28f, 0.13f, 0.05f), new Vector3(0.4f, 0.26f, 0.55f), footMat);
-        Transform footR = Part("FootR", model, new Vector3(0.28f, 0.13f, 0.05f), new Vector3(0.4f, 0.26f, 0.55f), footMat);
-        Transform handL = Part("HandL", model, new Vector3(-0.72f, 0.7f, 0f), Vector3.one * 0.28f, bodyMat);
-        Transform handR = Part("HandR", model, new Vector3(0.72f, 0.7f, 0f), Vector3.one * 0.28f, bodyMat);
+        // Sleepy, self-satisfied eyes: white ovals with the pupil low in them, half hidden under a heavy lid in the
+        // body's own colour.
+        var lids = new List<Renderer>();
+        foreach (float side in new[] { -1f, 1f })
+        {
+            string tag = side < 0f ? "L" : "R";
+            Part("Eye" + tag, body, new Vector3(side * 0.2f, 0.92f, 0.5f), new Vector3(0.3f, 0.36f, 0.3f), eyeMat);
+            Part("Pupil" + tag, body, new Vector3(side * 0.19f, 0.87f, 0.635f), new Vector3(0.13f, 0.17f, 0.1f), pupilMat);
+            Transform lid = Part("Lid" + tag, body, new Vector3(side * 0.2f, 1.03f, 0.535f), new Vector3(0.4f, 0.19f, 0.3f), bodyMat);
+            lid.localRotation = Quaternion.Euler(0f, 0f, -side * 7f);
+            lids.Add(lid.GetComponent<Renderer>());
+        }
+        BuildFace(body, pupilMat);
+
+        // Two dark curls on top of the head.
+        foreach (float side in new[] { -1f, 1f })
+        {
+            string tag = side < 0f ? "L" : "R";
+            Part("Hair" + tag + "1", body, new Vector3(side * 0.08f, 1.34f, 0f), Vector3.one * 0.13f, hairMat);
+            Part("Hair" + tag + "2", body, new Vector3(side * 0.15f, 1.41f, 0f), Vector3.one * 0.12f, hairMat);
+            Part("Hair" + tag + "3", body, new Vector3(side * 0.24f, 1.43f, 0f), Vector3.one * 0.11f, hairMat);
+            Part("Hair" + tag + "4", body, new Vector3(side * 0.31f, 1.37f, 0f), Vector3.one * 0.10f, hairMat);
+        }
+
+        // Big white shoes, white gloves with a fat cuff; thin arms and legs join them to the body.
+        Transform footL = Part("FootL", model, new Vector3(-0.28f, 0.15f, 0.1f), new Vector3(0.42f, 0.3f, 0.62f), footMat);
+        Transform footR = Part("FootR", model, new Vector3(0.28f, 0.15f, 0.1f), new Vector3(0.42f, 0.3f, 0.62f), footMat);
+        Transform handL = Part("HandL", model, new Vector3(-0.9f, 0.85f, 0.05f), Vector3.one * 0.3f, gloveMat);
+        Transform handR = Part("HandR", model, new Vector3(0.9f, 0.85f, 0.05f), Vector3.one * 0.3f, gloveMat);
+        foreach (float side in new[] { -1f, 1f })
+        {
+            Transform hand = side < 0f ? handL : handR;
+            Transform cuff = Part("GloveCuff", hand, new Vector3(-side * 0.42f, 0.62f, 0f), new Vector3(0.8f, 0.55f, 0.8f), gloveMat);
+            cuff.localRotation = Quaternion.Euler(0f, 0f, side * 35f);
+        }
+
+        // Anchors on the body (so the limbs lean and bob with it) that the arms and legs start from.
+        Transform hipL = Anchor("HipL", body, new Vector3(-0.28f, 0.26f, 0.03f));
+        Transform hipR = Anchor("HipR", body, new Vector3(0.28f, 0.26f, 0.03f));
+        Transform shoulderL = Anchor("ShoulderL", body, new Vector3(-0.58f, 0.93f, 0f));
+        Transform shoulderR = Anchor("ShoulderR", body, new Vector3(0.58f, 0.93f, 0f));
+        Limb("LegL", model, hipL, footL, 0.16f, limbMat);
+        Limb("LegR", model, hipR, footR, 0.16f, limbMat);
+        Limb("ArmL", model, shoulderL, handL, 0.13f, limbMat);
+        Limb("ArmR", model, shoulderR, handR, 0.13f, limbMat);
 
         var walker = player.AddComponent<CartoonWalker>();
         var so = new SerializedObject(walker);
@@ -150,14 +196,12 @@ public static class CartoonPlayerBuilder
         so.FindProperty("rightHand").objectReferenceValue = handR;
         so.ApplyModifiedPropertiesWithoutUndo();
 
-        // Body and hands get a per-player color at runtime.
+        // The body and its eyelids get a per-player color at runtime (gloves and shoes are white, see CharacterStyle).
         var appearance = player.AddComponent<PlayerAppearance>();
         var appearanceSo = new SerializedObject(appearance);
         var tinted = appearanceSo.FindProperty("tinted");
-        var renderers = new List<Renderer>
-        {
-            bodyMesh.GetComponent<Renderer>(), handL.GetComponent<Renderer>(), handR.GetComponent<Renderer>()
-        };
+        var renderers = new List<Renderer> { bodyMesh.GetComponent<Renderer>() };
+        renderers.AddRange(lids);
         tinted.arraySize = renderers.Count;
         for (int i = 0; i < renderers.Count; i++)
             tinted.GetArrayElementAtIndex(i).objectReferenceValue = renderers[i];
@@ -233,9 +277,9 @@ public static class CartoonPlayerBuilder
         // it (still inside the booth) and looks a little to the left of the character, so the character ends up on
         // the right of the screen, away from the panel. Far enough back to fit a top hat.
         Transform standPoint = Marker("StandPoint", t, stand);
-        Vector3 cameraPosition = stand + new Vector3(0f, 1.1f, -3.3f);
+        Vector3 cameraPosition = stand + new Vector3(0f, 1.3f, -3.6f);
         Transform cameraPoint = Marker("CameraPoint", t, cameraPosition);
-        cameraPoint.rotation = Quaternion.LookRotation(stand + new Vector3(-1.15f, 0.95f, 0f) - cameraPosition);
+        cameraPoint.rotation = Quaternion.LookRotation(stand + new Vector3(-1.2f, 1.15f, 0f) - cameraPosition);
         Transform exitPoint = Marker("ExitPoint", t, new Vector3(c.x, 0.1f, frontZ - 2.0f));
         Transform signAnchor = Marker("SignAnchor", t, new Vector3(c.x, H + 0.95f, c.z));
 
@@ -265,15 +309,39 @@ public static class CartoonPlayerBuilder
         return go.transform;
     }
 
-    // Angry eyebrows (low over the middle, high on the outside, pressing down on the eyes) and a smirk: a mouth that
-    // is only raised on one side, with a little dimple at the raised corner. All parts are children of the body,
-    // so they move with it.
-    static void BuildAngryFace(Transform body, Material mat)
-    {
-        // Eyebrows. Rotation = turn the outer end back around the round head, after tilting the inner end down.
-        Tilted("BrowL", body, new Vector3(-0.2f, 1.07f, 0.56f), new Vector3(0.36f, 0.075f, 0.09f), yaw: -20f, tilt: -27f, mat);
-        Tilted("BrowR", body, new Vector3(0.2f, 1.07f, 0.56f), new Vector3(0.36f, 0.075f, 0.09f), yaw: 20f, tilt: 27f, mat);
+    // How far the body is lifted off the ground by the legs (the body's own parts keep their coordinates).
+    const float BodyLift = 0.3f;
 
+    // An empty point to attach a limb to.
+    static Transform Anchor(string name, Transform parent, Vector3 localPos)
+    {
+        var go = new GameObject(name);
+        go.transform.SetParent(parent, false);
+        go.transform.localPosition = localPos;
+        return go.transform;
+    }
+
+    // A thin arm or leg: a cylinder that LimbLinker keeps stretched between two points.
+    static void Limb(string name, Transform parent, Transform from, Transform to, float thickness, Material mat)
+    {
+        var go = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+        go.name = name;
+        Object.DestroyImmediate(go.GetComponent<Collider>());
+        go.GetComponent<Renderer>().sharedMaterial = mat;
+        go.transform.SetParent(parent, false);
+
+        var linker = go.AddComponent<LimbLinker>();
+        var so = new SerializedObject(linker);
+        so.FindProperty("from").objectReferenceValue = from;
+        so.FindProperty("to").objectReferenceValue = to;
+        so.FindProperty("thickness").floatValue = thickness;
+        so.ApplyModifiedPropertiesWithoutUndo();
+    }
+
+    // The smirk: a mouth that is only raised on one side, with a little dimple at the raised corner. All parts are
+    // children of the body, so they move with it.
+    static void BuildFace(Transform body, Material mat)
+    {
         // Smirk: a flat left half, a middle that starts to rise and a right corner curled up hard, ending in a dimple.
         Tilted("SmirkA", body, new Vector3(-0.09f, 0.575f, 0.565f), new Vector3(0.27f, 0.055f, 0.06f), yaw: -12f, tilt: 3f, mat);
         Tilted("SmirkB", body, new Vector3(0.10f, 0.615f, 0.565f), new Vector3(0.24f, 0.055f, 0.06f), yaw: 8f, tilt: 20f, mat);
@@ -539,6 +607,74 @@ public static class CartoonPlayerBuilder
         so.ApplyModifiedPropertiesWithoutUndo();
 
         Undo.RegisterCreatedObjectUndo(zone, "Create Color Zone");
+    }
+
+    // The winners' podium behind a color zone: the tallest step in the middle (gold), shorter ones either side
+    // (silver, bronze), each with its place number painted on the riser. MatchManager moves 1st/2nd/3rd place here
+    // once a fight ends (see PlacePodium); GameLayout.PodiumSpot has the same offsets, so the steps and the
+    // standing spots always agree.
+    static void BuildPodium(Vector3 center, string objectName)
+    {
+        Material[] stepMats =
+        {
+            MakeMaterial("PodiumGold", new Color(1f, 0.82f, 0.25f)),
+            MakeMaterial("PodiumSilver", new Color(0.78f, 0.8f, 0.85f)),
+            MakeMaterial("PodiumBronze", new Color(0.72f, 0.45f, 0.2f))
+        };
+        Material plateMat = MakeMaterial("PodiumPlate", new Color(0.1f, 0.1f, 0.12f));
+        Material baseMat = MakeMaterial("PodiumBase", new Color(0.3f, 0.3f, 0.36f));
+
+        var root = new GameObject(objectName);
+        root.transform.position = center;
+        Transform t = root.transform;
+
+        float[] widths = { 1.6f, 1.4f, 1.4f };
+        const float depth = 1.8f;
+        string[] numbers = { "1", "2", "3" };
+        for (int i = 0; i < 3; i++)
+            BuildPodiumStep(t, GameLayout.PodiumOffsetX[i], widths[i], GameLayout.PodiumStepHeight[i], depth, stepMats[i], plateMat, numbers[i]);
+
+        // A low base so the steps don't look like they float above the grass.
+        Box("Base", t, new Vector3(0f, 0.02f, 0f), new Vector3(5.4f, 0.04f, depth + 0.3f), baseMat);
+
+        Undo.RegisterCreatedObjectUndo(root, "Create " + objectName);
+    }
+
+    // One step: a walkable block (players stand on top; layer 2 so the camera passes through, like the stands)
+    // plus a number plate on the front face, facing south so it reads from the field.
+    static void BuildPodiumStep(Transform parent, float x, float width, float height, float depth,
+        Material stepMat, Material plateMat, string number)
+    {
+        Box("Step", parent, new Vector3(x, height / 2f, 0f), new Vector3(width, height, depth), stepMat, keepCollider: true).gameObject.layer = 2;
+        Box("Plate", parent, new Vector3(x, height * 0.55f, -depth / 2f - 0.015f), new Vector3(width * 0.5f, height * 0.6f, 0.03f), plateMat);
+
+        var canvasGo = new GameObject("Number", typeof(Canvas));
+        canvasGo.transform.SetParent(parent, false);
+        canvasGo.transform.localPosition = new Vector3(x, height * 0.55f, -depth / 2f - 0.033f);
+        // Identity rotation: the canvas's forward (+Z, unrotated since the podium root itself doesn't turn) points
+        // north, away from the field, so it reads correctly to someone standing south of it, facing the podium.
+        canvasGo.GetComponent<Canvas>().renderMode = RenderMode.WorldSpace;
+        const float px = 220f;
+        ((RectTransform)canvasGo.transform).sizeDelta = new Vector2(px, px);
+        float worldSize = Mathf.Min(width * 0.42f, height * 0.55f);
+        canvasGo.transform.localScale = Vector3.one * (worldSize / px);
+
+        var textGo = new GameObject("Text", typeof(RectTransform));
+        textGo.transform.SetParent(canvasGo.transform, false);
+        var textRect = (RectTransform)textGo.transform;
+        textRect.anchorMin = Vector2.zero;
+        textRect.anchorMax = Vector2.one;
+        textRect.offsetMin = textRect.offsetMax = Vector2.zero;
+        var text = textGo.AddComponent<Text>();
+        text.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        text.text = number;
+        text.fontSize = 190;
+        text.fontStyle = FontStyle.Bold;
+        text.alignment = TextAnchor.MiddleCenter;
+        text.color = Color.white;
+        var outline = textGo.AddComponent<Outline>();
+        outline.effectColor = new Color(0f, 0f, 0f, 0.85f);
+        outline.effectDistance = new Vector2(6f, -6f);
     }
 
     // Spark particles, and the host-side slime spawner.
@@ -828,6 +964,18 @@ public static class CartoonPlayerBuilder
         var mainMenu = new GameObject("MainMenu");
         mainMenu.AddComponent<MainMenu>();
         Undo.RegisterCreatedObjectUndo(mainMenu, "Create Main Menu");
+
+        var settingsMenu = new GameObject("SettingsMenu");
+        settingsMenu.AddComponent<SettingsMenu>();
+        Undo.RegisterCreatedObjectUndo(settingsMenu, "Create Settings Menu");
+
+        var menuMusic = new GameObject("MenuMusic");
+        menuMusic.AddComponent<MenuMusic>();
+        Undo.RegisterCreatedObjectUndo(menuMusic, "Create Menu Music");
+
+        var adminPanel = new GameObject("AdminPanel");
+        adminPanel.AddComponent<AdminPanel>();
+        Undo.RegisterCreatedObjectUndo(adminPanel, "Create Admin Panel");
 
         var matchUi = new GameObject("MatchUI");
         matchUi.AddComponent<MatchUI>();

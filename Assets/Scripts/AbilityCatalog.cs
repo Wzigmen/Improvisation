@@ -11,7 +11,8 @@ public enum AbilityId : byte
     Heal = 6,
     Shield = 7,
     Rage = 8,
-    Vortex = 9
+    Vortex = 9,
+    EyeLasers = 10
 }
 
 // What one ability card is: shown on the card and used by the game code.
@@ -49,6 +50,10 @@ public static class AbilityCatalog
     public const int RageMultiplier = 2;            // everything you deal is multiplied while the rage lasts
     public const float VortexRadius = 9f;
     public const int VortexDamage = 5;
+    public const int LaserDamage = 10;
+    public const float LaserInterval = 0.2f;        // one hit this often, for as long as the character stands still
+    public const float LaserRange = 30f;
+    public const float LaserWidth = 0.9f;
 
     public static readonly AbilityInfo[] All =
     {
@@ -121,6 +126,13 @@ public static class AbilityCatalog
             Description = "Втягивает всех рядом к вам и наносит небольшой урон.",
             BigText = ((int)VortexRadius) + " м", BigCaption = "радиус притяжения",
             Cooldown = 12f, Color = new Color(0.5f, 0.55f, 1f)
+        },
+        new AbilityInfo
+        {
+            Id = AbilityId.EyeLasers, Name = "Лазеры из глаз",
+            Description = "Из глаз бьют лазеры по всему, что перед вами. Идут, пока вы стоите: двинулись — гаснут.",
+            BigText = LaserDamage.ToString(), BigCaption = "урона каждые 0,2 с",
+            Cooldown = 12f, Color = new Color(0.9f, 0.15f, 0.75f)
         }
     };
 

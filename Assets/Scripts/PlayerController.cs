@@ -4,6 +4,11 @@ using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
+// Physical damage (fists, leap slam, vortex) and magical damage (lightning, fire dance) are tracked separately so
+// items can boost or resist one without touching the other, and so a hit looks different depending on which kind
+// it is (see PlayerController/Mob's hit-reaction spark colour).
+public enum DamageType : byte { Physical, Magical }
+
 // Each player controls only their own character (IsOwner); other players' characters are moved by
 // ClientNetworkTransform and just derive their walking/sprinting animation from the observed movement.
 // Space jumps; jumping while sprinting is a forward flip. Right mouse button punches.
@@ -174,8 +179,9 @@ public class PlayerController : NetworkBehaviour
     public int AttackSide => attackSide;
     public bool AttackHeavy => attackHeavy;
 
-    // The ability cards (a separate component) and what they need to know about us.
+    // The ability cards and the equipped items (separate components) and what they need to know about us.
     public PlayerAbilities Abilities { get; private set; }
+    public PlayerItems Items { get; private set; }
     public Transform CameraTransform => cameraTransform;
     public bool ControlledNow { get; private set; }   // owner: input is currently allowed (not paused / frozen / stunned)
     public bool IsLeaping => leaping;
@@ -191,6 +197,7 @@ public class PlayerController : NetworkBehaviour
         controller = GetComponent<CharacterController>();
         Brain = GetComponent<BotBrain>();
         Abilities = GetComponent<PlayerAbilities>();
+        Items = GetComponent<PlayerItems>();
 
         moveAction = new InputAction("Move", InputActionType.Value);
         moveAction.AddCompositeBinding("2DVector")
@@ -407,7 +414,7 @@ public class PlayerController : NetworkBehaviour
             if (SprintAmount > 0.5f && inputMagnitude > 0.1f)
                 StartFlip(direction);
             else
-                verticalVelocity = jumpSpeed;
+                verticalVelocity = jumpSpeed * Mathf.Sqrt(AdminMultiplier(AdminSettings.JumpHeight));   // height grows with speed squared
 
             jumpBufferTimer = 0f;
             coyoteTimer = 0f;
@@ -445,7 +452,7 @@ public class PlayerController : NetworkBehaviour
                 ? leapDirection * leapSpeed
                 : dashing
                     ? dashDirection * dashSpeedNow
-                    : direction * (moveSpeed * sprintFactor);
+                    : direction * (moveSpeed * sprintFactor * (Items != null ? Items.MoveSpeedMultiplier : 1f) * AdminMultiplier(AdminSettings.MoveSpeed));
 
         // A small step forward into the punch, and whatever a punch that hit us added.
         if (AttackTime > 0.04f && AttackTime < 0.2f) horizontal += transform.forward * lungeSpeed;
@@ -475,7 +482,7 @@ public class PlayerController : NetworkBehaviour
         dashDirection = flat.sqrMagnitude > 0.001f ? flat.normalized : transform.forward;
         dashing = true;
         dashStartTime = Time.time;
-        nextDashTime = Time.time + DashCooldown;
+        nextDashTime = Time.time + DashCooldown * (Items != null ? Items.AbilityCooldownMultiplier : 1f);
 
         transform.rotation = Quaternion.LookRotation(dashDirection, Vector3.up);
         if (controller.isGrounded) verticalVelocity = dashHop;
@@ -523,11 +530,21 @@ public class PlayerController : NetworkBehaviour
     // Card 3: instant move, no fade (the fade is for changing locations).
     public void TeleportInstant(Vector3 position, float yaw) => TeleportNow(position, yaw);
 
+    // The admin panel's sliders (see AdminPanel) only count for the person who runs the game (the host, or the solo
+    // player) and only for their own character; everybody else always gets 1.
+    float AdminMultiplier(float value) => IsSpawned && IsOwner && IsServer && !IsBot ? value : 1f;
+
+    // Host side (admin panel): bring this player to a spot next to the admin, with the usual fade to black.
+    public void ServerSummon(Vector3 position, float yaw) => TeleportRpc(position, yaw);
+
     // ---- attacking -----------------------------------------------------------------------------
 
     void StartAttack(Vector3 cameraForward, bool heavy = false)
     {
-        nextAttackTime = Time.time + (heavy ? heavyDuration + 0.05f : attackCooldown);
+        float cooldownMult = Items != null ? Items.AttackCooldownMultiplier : 1f;   // Whirlwind Knuckle-Duster
+        // The admin's speed slider divides the wait; it never drops below the fist's travel time, or hits would be lost.
+        float wait = (heavy ? heavyDuration + 0.05f : attackCooldown) * cooldownMult / AdminMultiplier(AdminSettings.AttackSpeed);
+        nextAttackTime = Time.time + Mathf.Max(wait, 0.16f);
 
         // Punch where the camera is looking.
         if (cameraForward.sqrMagnitude > 0.001f)
@@ -622,12 +639,22 @@ public class PlayerController : NetworkBehaviour
         var otherPlayer = targetObject.GetComponent<PlayerController>();
         if (otherPlayer != null && otherPlayer != this)
         {
-            ServerStrike(otherPlayer, damage, direction, power);
+            ServerStrike(otherPlayer, damage, direction, power, DamageType.Physical);
             return;
         }
 
         var mob = targetObject.GetComponent<Mob>();
-        if (mob != null) mob.ServerHit(direction, power, Abilities != null ? Abilities.ScaleDamage(damage) : damage);
+        if (mob != null) mob.ServerHit(direction, power, ComputeOutgoingDamage(damage, DamageType.Physical), DamageType.Physical);
+    }
+
+    // Host: what a hit of this size becomes once this player's own boosts are folded in - Rage, an item's damage
+    // bonus for that damage type, and a lucky critical hit. Pure (no side effects), so it's safe to call even for
+    // a hit that might not land (the caller decides that afterwards). Shared by punches, area abilities and the bolt.
+    public int ComputeOutgoingDamage(int damage, DamageType type)
+    {
+        if (Abilities != null) damage = Abilities.ScaleDamage(damage);
+        if (Items != null) damage = Items.ApplyOutgoing(damage, type);
+        return damage;
     }
 
     // Host side: one player hurts another (`this` is the attacker). Used by punches and by every ability card.
@@ -635,11 +662,13 @@ public class PlayerController : NetworkBehaviour
     // Fighters only hurt each other while the fight is on, and only while both are still standing.
     // If the victim has the Thorns card active, the attacker takes double the damage they dealt.
     // A victim behind the Shield card takes no damage and isn't even pushed; an attacker in Rage deals double.
-    public bool ServerStrike(PlayerController victim, int damage, Vector3 direction, float power)
+    public bool ServerStrike(PlayerController victim, int damage, Vector3 direction, float power, DamageType type = DamageType.Physical)
     {
         if (victim == null || victim == this) return false;
         if (victim.Abilities != null && victim.Abilities.ShieldActive) return false;
-        if (Abilities != null) damage = Abilities.ScaleDamage(damage);
+
+        damage = ComputeOutgoingDamage(damage, type);
+        if (victim.Items != null) damage = victim.Items.ApplyIncoming(damage, type);   // Stone Skin / Ward
 
         if (inMatch.Value || victim.inMatch.Value)
         {
@@ -651,9 +680,16 @@ public class PlayerController : NetworkBehaviour
             victim.ServerDamage(damage);
             if (victim.Abilities != null && victim.Abilities.ThornsActive)
                 ServerDamage(damage * AbilityCatalog.ThornsMultiplier);
+
+            // Vampiric Fang: heal back a slice of the physical damage that actually landed.
+            if (Items != null)
+            {
+                float steal = Items.LifestealFraction(type);
+                if (steal > 0f) ServerHeal(Mathf.Max(1, Mathf.RoundToInt(damage * steal)));
+            }
         }
 
-        victim.ServerReceiveHit(direction, power);
+        victim.ServerReceiveHit(direction, power, type);
         return true;
     }
 
@@ -714,6 +750,10 @@ public class PlayerController : NetworkBehaviour
         TeleportRpc(position, yaw);
     }
 
+    // Host side: move a fighter onto the winners' podium once the fight is over (see MatchManager.PlacePodium).
+    // Same fade as any other trip between locations; health and ready are left alone, only the position changes.
+    public void ServerPlacePodium(Vector3 position, float yaw) => TeleportRpc(position, yaw);
+
     // The "Ready" button. The host stores the answer, so it can't be changed outside the ready check.
     public void RequestReady(bool value) => SetReadyRpc(value);
 
@@ -767,10 +807,10 @@ public class PlayerController : NetworkBehaviour
     // ---- being hit -----------------------------------------------------------------------------
 
     // Host side only: tell the victim's machine to knock them back and everybody to play the reaction.
-    public void ServerReceiveHit(Vector3 direction, float power)
+    public void ServerReceiveHit(Vector3 direction, float power, DamageType type = DamageType.Physical)
     {
         KnockbackRpc(direction, power);
-        HitReactionRpc(direction, power);
+        HitReactionRpc(direction, power, (byte)type);
     }
 
     // Only the victim's own machine moves their character, so the shove is applied there.
@@ -779,7 +819,8 @@ public class PlayerController : NetworkBehaviour
     {
         Vector3 d = direction;
         d.y = 0f;
-        knockback = d.normalized * (knockbackSpeed * power);
+        float resist = Items != null ? Items.KnockbackMultiplier : 1f;   // Heavy Boots
+        knockback = d.normalized * (knockbackSpeed * power * resist);
         stunTimer = stunTime;
         verticalVelocity = Mathf.Max(verticalVelocity, 4f);
         flipping = false;
@@ -787,8 +828,13 @@ public class PlayerController : NetworkBehaviour
         hitPending = false;
     }
 
+    // Physical hits spark warm orange, magical ones violet - the same colour everywhere a hit shows, whatever
+    // ability caused it, so the two kinds of damage always read differently.
+    static Color SparkColor(DamageType type) =>
+        type == DamageType.Magical ? new Color(0.65f, 0.4f, 1f) : new Color(1f, 0.55f, 0.2f);
+
     [Rpc(SendTo.Everyone)]
-    void HitReactionRpc(Vector3 direction, float power)
+    void HitReactionRpc(Vector3 direction, float power, byte type)
     {
         hitStartTime = Time.time;
         hitDirection = direction;
@@ -800,7 +846,7 @@ public class PlayerController : NetworkBehaviour
         if (fx != null)
         {
             Vector3 point = transform.position + Vector3.up * 0.9f;
-            fx.Burst(point, new Color(1f, 0.9f, 0.3f), Mathf.RoundToInt(12 * power), 4.5f * power);
+            fx.Burst(point, SparkColor((DamageType)type), Mathf.RoundToInt(12 * power), 4.5f * power);
         }
 
         if (IsOwner && cameraTransform != null)

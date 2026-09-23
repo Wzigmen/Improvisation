@@ -87,8 +87,8 @@ public static class PlayerNickname
 public class NameTag : MonoBehaviour
 {
     const float BaseScale = 0.01f;         // the canvas is scaled down (px -> m); never assign a plain 1 here
-    const float HeightNoBar = 2.05f;       // above the head
-    const float HeightWithBar = 2.65f;     // above the health bar of a fighter
+    const float HeightNoBar = 2.35f;       // above the head
+    const float HeightWithBar = 2.95f;     // above the health bar of a fighter
 
     PlayerController player;
     Transform canvasTransform;

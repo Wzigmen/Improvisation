@@ -44,6 +44,7 @@ public class MatchManager : NetworkBehaviour
         0, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
 
     readonly List<PlayerController> bots = new List<PlayerController>();   // host only
+    readonly List<ulong> eliminationOrder = new List<ulong>();              // host only: NetworkObjectIds, in the order fighters went down
     float phaseStartedAt;                                                    // host only, real time
 
     public Phase CurrentPhase => (Phase)phase.Value;
@@ -92,6 +93,7 @@ public class MatchManager : NetworkBehaviour
         startedWith.Value = players.Count;
         winnerObjectId.Value = -1L;
         botCount.Value = 0;
+        eliminationOrder.Clear();
 
         // Against bots there is always at least one; the host can change the number in the ready menu.
         if (Mode == MatchMode.Bots) SetBotCount(1);
@@ -203,12 +205,15 @@ public class MatchManager : NetworkBehaviour
                     foreach (var f in fighters)
                     {
                         if (f.Health > 0) { alive++; lastAlive = f; }
+                        // Remember the order fighters go down in, so the podium can seat 2nd and 3rd place too.
+                        else if (!eliminationOrder.Contains(f.NetworkObjectId)) eliminationOrder.Add(f.NetworkObjectId);
                     }
                     if (alive <= 1)
                     {
                         winnerObjectId.Value = alive == 1 ? (long)lastAlive.NetworkObjectId : -1L;
                         phaseEndTime.Value = now + ResultSeconds;
                         phase.Value = (byte)Phase.Result;
+                        PlacePodium(fighters, lastAlive);
                     }
                 }
                 break;
@@ -219,9 +224,33 @@ public class MatchManager : NetworkBehaviour
         }
     }
 
+    // Sends the winner (and whoever went down last, and the one before that) to stand on the podium behind the
+    // zone the match was started from, while the result screen is up. A draw leaves the podium empty.
+    void PlacePodium(List<PlayerController> fighters, PlayerController winner)
+    {
+        if (winner == null) return;
+
+        var ranking = new List<PlayerController> { winner };
+        for (int i = eliminationOrder.Count - 1; i >= 0 && ranking.Count < 3; i--)
+        {
+            foreach (var f in fighters)
+            {
+                if (f.NetworkObjectId == eliminationOrder[i] && !ranking.Contains(f)) { ranking.Add(f); break; }
+            }
+        }
+
+        Vector3 center = Mode == MatchMode.Bots ? GameLayout.BotsPodiumCenter : GameLayout.PlayersPodiumCenter;
+        for (int place = 0; place < ranking.Count; place++)
+        {
+            GameLayout.PodiumSpot(center, place, out Vector3 position, out float yaw);
+            ranking[place].ServerPlacePodium(position, yaw);
+        }
+    }
+
     void ReturnToLobby()
     {
         DespawnAllBots();
+        eliminationOrder.Clear();
 
         foreach (var player in ActivePlayers(true, false))
             player.ServerLeaveMatch(PlayerController.GetSpawnPosition(player.OwnerClientId), 0f);

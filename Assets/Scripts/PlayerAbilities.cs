@@ -2,7 +2,7 @@ using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
-// The ability cards of one character (ten cards exist; the player puts up to four of them into the four slots).
+// The ability cards of one character (eleven cards exist; the player puts up to four of them into the four slots).
 // Input, cooldowns and the "start" of every card run on the owner's machine; everything that hurts somebody
 // (or buffs a fighter) is decided by the host, like normal punches.
 //
@@ -12,6 +12,7 @@ using UnityEngine.InputSystem;
 //   Fire dance   15 damage / 0.4 s     Lightning   instant bolt along the aim line
 //   Heal         +30 health            Shield      no damage taken for a few seconds
 //   Rage         double damage dealt   Vortex      pulls everybody close towards you
+//   Eye lasers   10 damage / 0.2 s, until the character starts to move
 [RequireComponent(typeof(PlayerController))]
 public class PlayerAbilities : NetworkBehaviour
 {
@@ -26,8 +27,14 @@ public class PlayerAbilities : NetworkBehaviour
         false, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
     readonly NetworkVariable<bool> rage = new NetworkVariable<bool>(
         false, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
+    readonly NetworkVariable<bool> lasers = new NetworkVariable<bool>(
+        false, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
 
     PlayerController player;
+    bool laserStopSent;                                                // owner: the "stop" for the running lasers has been sent
+    double nextLaserTick;                                              // host
+    Transform[] laserBeams, laserGlows, laserEyes;                     // everybody: the two red beams and the glow on the eyes
+    Material laserMaterial;
     readonly InputAction[] slotActions = new InputAction[AbilityLoadout.SlotCount];
     readonly float[] readyAt = new float[AbilityCatalog.All.Length];   // owner: when each card can be used again
     float danceLockUntil;                                              // owner: no moving while dancing
@@ -40,12 +47,14 @@ public class PlayerAbilities : NetworkBehaviour
     public bool IsDancing => dancing.Value;
     public bool ShieldActive => shield.Value;
     public bool RageActive => rage.Value;
+    public bool LasersActive => lasers.Value;
     public bool InputLocked => Time.time < danceLockUntil;
 
     public float CooldownLeft(AbilityId id) => Mathf.Max(0f, readyAt[(int)id] - Time.time);
     public bool IsActive(AbilityId id) =>
         (id == AbilityId.Thorns && thorns.Value) || (id == AbilityId.Dance && dancing.Value) ||
-        (id == AbilityId.Shield && shield.Value) || (id == AbilityId.Rage && rage.Value);
+        (id == AbilityId.Shield && shield.Value) || (id == AbilityId.Rage && rage.Value) ||
+        (id == AbilityId.EyeLasers && lasers.Value);
 
     // Host: what a hit of this size becomes for this fighter (double while the rage lasts).
     public int ScaleDamage(int damage) => rage.Value ? damage * AbilityCatalog.RageMultiplier : damage;
@@ -76,6 +85,13 @@ public class PlayerAbilities : NetworkBehaviour
     public override void OnNetworkDespawn()
     {
         if (marker != null) Destroy(marker.gameObject);
+        if (laserBeams != null)
+            for (int i = 0; i < 2; i++)
+            {
+                if (laserBeams[i] != null) Destroy(laserBeams[i].gameObject);
+                if (laserGlows[i] != null) Destroy(laserGlows[i].gameObject);
+            }
+        laserBeams = laserGlows = null;
         foreach (var action in slotActions) action.Disable();
     }
 
@@ -83,7 +99,40 @@ public class PlayerAbilities : NetworkBehaviour
     {
         if (!IsSpawned) return;
         if (IsServer) ServerTick();
-        if (IsOwner && !player.IsBot) OwnerInput();
+        if (IsOwner && !player.IsBot)
+        {
+            OwnerLasers();
+            OwnerInput();
+        }
+    }
+
+    void LateUpdate() => UpdateLaserVisuals();
+
+    // ---- owner: the eye lasers keep going until the character starts to move ---------------------
+
+    void OwnerLasers()
+    {
+        if (!lasers.Value)
+        {
+            laserStopSent = false;
+            return;
+        }
+
+        // Moving in any way (walking, jumping, dashing) ends the lasers; the "stop" goes to the host once.
+        bool moving = player.Speed01 > 0.1f || player.Airborne || player.IsDashing || player.IsDead;
+        if (moving)
+        {
+            if (!laserStopSent)
+            {
+                laserStopSent = true;
+                LasersRpc(false);
+            }
+            return;
+        }
+
+        // Standing still, the character turns to look where the camera does, so the lasers follow the aim.
+        Vector3 aim = player.AimDirection();
+        transform.rotation = Quaternion.RotateTowards(transform.rotation, Quaternion.LookRotation(aim, Vector3.up), 540f * Time.deltaTime);
     }
 
     // ---- owner: pressing cards ----------------------------------------------------------------
@@ -180,10 +229,20 @@ public class PlayerAbilities : NetworkBehaviour
                 VortexRpc();
                 started = true;
                 break;
+            case AbilityId.EyeLasers:
+                // They only run while standing still, so they can't be started on the move or in the air.
+                if (lasers.Value || player.Speed01 > 0.1f || player.Airborne || player.IsDashing) return;
+                laserStopSent = false;
+                LasersRpc(true);
+                started = true;
+                break;
         }
 
-        if (started) readyAt[(int)id] = Time.time + AbilityCatalog.Get(id).Cooldown;
+        if (started) readyAt[(int)id] = Time.time + AbilityCatalog.Get(id).Cooldown * CooldownMult;
     }
+
+    // The Hourglass item shortens every card's cooldown (and the teleport one set separately below).
+    float CooldownMult => player.Items != null ? player.Items.AbilityCooldownMultiplier : 1f;
 
     // Called by the character when a leap touches the ground.
     public void OnLeapLanded(Vector3 position) => SlamRpc(position);
@@ -215,7 +274,7 @@ public class PlayerAbilities : NetworkBehaviour
             EffectRpc((byte)Fx.Teleport, transform.position);
             player.TeleportInstant(destination, yaw);
             EffectRpc((byte)Fx.Teleport, destination);
-            readyAt[(int)AbilityId.Teleport] = Time.time + AbilityCatalog.Get(AbilityId.Teleport).Cooldown;
+            readyAt[(int)AbilityId.Teleport] = Time.time + AbilityCatalog.Get(AbilityId.Teleport).Cooldown * CooldownMult;
         }
     }
 
@@ -351,7 +410,7 @@ public class PlayerAbilities : NetworkBehaviour
         if (!ServerMayUse()) return;
         if (Vector3.Distance(center, transform.position) > 4f) return; // must be where the character really is
 
-        AreaStrike(center, AbilityCatalog.SlamRadius, AbilityCatalog.SlamDamage, 1.7f);
+        AreaStrike(center, AbilityCatalog.SlamRadius, AbilityCatalog.SlamDamage, 1.7f, DamageType.Physical);
         EffectRpc((byte)Fx.Slam, center);
     }
 
@@ -384,7 +443,16 @@ public class PlayerAbilities : NetworkBehaviour
         if (direction.sqrMagnitude < 0.01f) return;
         direction.Normalize();
 
-        float nearest = AbilityCatalog.LightningRange;
+        Vector3 end = StrikeAlongLine(origin, direction, AbilityCatalog.LightningRange, AbilityCatalog.LightningWidth,
+            AbilityCatalog.LightningDamage, 1.4f, DamageType.Magical);
+        LightningFxRpc(origin, end);
+    }
+
+    // Host: hurts the nearest target on a flat line from `origin` along `direction` - a player, a slime or the
+    // punching bag within `width` of the line and `range` away - and returns where the line ended.
+    Vector3 StrikeAlongLine(Vector3 origin, Vector3 direction, float range, float width, int damage, float power, DamageType type)
+    {
+        float nearest = range;
         PlayerController hitPlayer = null;
         Mob hitMob = null;
         bool hitBag = false;
@@ -393,7 +461,7 @@ public class PlayerAbilities : NetworkBehaviour
         foreach (var victim in MatchManager.ActivePlayers(false))
         {
             if (victim == player || victim.IsDead) continue;
-            if (OnLine(origin, direction, victim.transform.position, out float along) && along < nearest)
+            if (OnLine(origin, direction, victim.transform.position, range, width, out float along) && along < nearest)
             {
                 nearest = along;
                 hitPlayer = victim;
@@ -405,7 +473,7 @@ public class PlayerAbilities : NetworkBehaviour
 
         foreach (var mob in FindObjectsByType<Mob>())
         {
-            if (OnLine(origin, direction, mob.transform.position, out float along) && along < nearest)
+            if (OnLine(origin, direction, mob.transform.position, range, width, out float along) && along < nearest)
             {
                 nearest = along;
                 hitPlayer = null;
@@ -416,7 +484,7 @@ public class PlayerAbilities : NetworkBehaviour
         }
 
         var bag = PunchingBag.Instance;
-        if (bag != null && OnLine(origin, direction, bag.transform.position, out float bagAlong) && bagAlong < nearest)
+        if (bag != null && OnLine(origin, direction, bag.transform.position, range, width, out float bagAlong) && bagAlong < nearest)
         {
             nearest = bagAlong;
             hitPlayer = null;
@@ -425,21 +493,64 @@ public class PlayerAbilities : NetworkBehaviour
             hitPoint = bag.transform.position + Vector3.down * 0.6f;
         }
 
-        if (hitPlayer != null) player.ServerStrike(hitPlayer, AbilityCatalog.LightningDamage, direction, 1.4f);
-        else if (hitMob != null) hitMob.ServerHit(direction, 1.4f, ScaleDamage(AbilityCatalog.LightningDamage));
-        else if (hitBag) player.ServerBagHit(hitPoint, direction, 1.4f);
+        if (hitPlayer != null) player.ServerStrike(hitPlayer, damage, direction, power, type);
+        else if (hitMob != null) hitMob.ServerHit(direction, power, player.ComputeOutgoingDamage(damage, type), type);
+        else if (hitBag) player.ServerBagHit(hitPoint, direction, power);
 
-        LightningFxRpc(origin, hitPoint);
+        return hitPoint;
     }
 
-    // Is `point` within a bolt's width of the line that starts at `origin` (flat, along `direction`)?
-    static bool OnLine(Vector3 origin, Vector3 direction, Vector3 point, out float along)
+    // Is `point` within `width` of the line that starts at `origin` (flat, along `direction`) and `range` long?
+    static bool OnLine(Vector3 origin, Vector3 direction, Vector3 point, float range, float width, out float along)
     {
         Vector3 to = point - origin;
         to.y = 0f;
         along = Vector3.Dot(to, direction);
-        if (along < 0f || along > AbilityCatalog.LightningRange) return false;
-        return (to - direction * along).magnitude <= AbilityCatalog.LightningWidth;
+        if (along < 0f || along > range) return false;
+        return (to - direction * along).magnitude <= width;
+    }
+
+    // The eye lasers: the owner asks for them to start and (once the character moves) to stop; the host runs them.
+    [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Owner)]
+    void LasersRpc(bool on)
+    {
+        if (!on)
+        {
+            lasers.Value = false;
+            return;
+        }
+
+        if (!ServerMayUse()) return;
+        lasers.Value = true;
+        nextLaserTick = NetworkManager.ServerTime.Time + AbilityCatalog.LaserInterval;
+    }
+
+    // Where the lasers start on the host: between the eyes, a little in front of the face.
+    Vector3 LaserOrigin() => transform.position + Vector3.up * 1.22f + transform.forward * 0.6f;
+
+    void LaserTick(double now)
+    {
+        // They only burn while the character is still in the fight and standing (a frozen solo game pauses them).
+        if (!ServerMayUse() || player.IsDead) { lasers.Value = false; return; }
+        if (Time.timeScale <= 0f || now < nextLaserTick) return;
+
+        nextLaserTick = now + AbilityCatalog.LaserInterval;
+        Vector3 direction = transform.forward;
+        direction.y = 0f;
+        if (direction.sqrMagnitude < 0.01f) return;
+        direction.Normalize();
+
+        // A light push (0.25) so the victim isn't thrown away by every hit.
+        Vector3 end = StrikeAlongLine(LaserOrigin(), direction, AbilityCatalog.LaserRange, AbilityCatalog.LaserWidth,
+            AbilityCatalog.LaserDamage, 0.25f, DamageType.Magical);
+        LaserHitFxRpc(end);
+    }
+
+    [Rpc(SendTo.Everyone)]
+    void LaserHitFxRpc(Vector3 point)
+    {
+        var fx = HitEffects.Instance;
+        if (fx != null) fx.Burst(point, new Color(1f, 0.2f, 0.25f), 10, 4f, 0.1f);
     }
 
     [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Owner)]
@@ -483,7 +594,7 @@ public class PlayerAbilities : NetworkBehaviour
             if (toUs.magnitude > AbilityCatalog.VortexRadius) continue;
             // A shove of speed v carries a player v*v/48 metres, so pick the speed that brings them (almost) to us.
             float pull = Mathf.Clamp(toUs.magnitude - 1.5f, 0.5f, 5f);
-            player.ServerStrike(victim, AbilityCatalog.VortexDamage, Outward(toUs), Mathf.Sqrt(48f * pull) / 9f);
+            player.ServerStrike(victim, AbilityCatalog.VortexDamage, Outward(toUs), Mathf.Sqrt(48f * pull) / 9f, DamageType.Physical);
         }
 
         foreach (var mob in FindObjectsByType<Mob>())
@@ -493,7 +604,7 @@ public class PlayerAbilities : NetworkBehaviour
             if (toUs.magnitude > AbilityCatalog.VortexRadius) continue;
             // Slimes slide v*v/40 metres after a shove of speed 7 * power.
             float pull = Mathf.Clamp(toUs.magnitude - 1.2f, 0.5f, 8f);
-            mob.ServerHit(Outward(toUs), Mathf.Sqrt(40f * pull) / 7f, ScaleDamage(AbilityCatalog.VortexDamage));
+            mob.ServerHit(Outward(toUs), Mathf.Sqrt(40f * pull) / 7f, player.ComputeOutgoingDamage(AbilityCatalog.VortexDamage, DamageType.Physical), DamageType.Physical);
         }
 
         EffectRpc((byte)Fx.Vortex, center);
@@ -506,6 +617,7 @@ public class PlayerAbilities : NetworkBehaviour
         if (thorns.Value && now >= thornsEnd) thorns.Value = false;
         if (shield.Value && now >= shieldEnd) shield.Value = false;
         if (rage.Value && now >= rageEnd) rage.Value = false;
+        if (lasers.Value) LaserTick(now);
 
         if (dancing.Value)
         {
@@ -514,7 +626,7 @@ public class PlayerAbilities : NetworkBehaviour
 
             while (now >= nextDanceTick && nextDanceTick < danceEnd)
             {
-                AreaStrike(transform.position, AbilityCatalog.DanceRadius, AbilityCatalog.DanceTickDamage, 0.5f);
+                AreaStrike(transform.position, AbilityCatalog.DanceRadius, AbilityCatalog.DanceTickDamage, 0.5f, DamageType.Magical);
                 nextDanceTick += AbilityCatalog.DanceTickInterval;
             }
             if (now >= danceEnd) dancing.Value = false;
@@ -523,7 +635,7 @@ public class PlayerAbilities : NetworkBehaviour
 
     // Hurts everybody within `radius` of `center` (except us): players (with all the usual fight rules),
     // slimes and the punching bag.
-    void AreaStrike(Vector3 center, float radius, int damage, float power)
+    void AreaStrike(Vector3 center, float radius, int damage, float power, DamageType type)
     {
         foreach (var victim in MatchManager.ActivePlayers(false))
         {
@@ -531,7 +643,7 @@ public class PlayerAbilities : NetworkBehaviour
             Vector3 d = victim.transform.position - center;
             d.y = 0f;
             if (d.magnitude > radius) continue;
-            player.ServerStrike(victim, damage, Outward(d), power);
+            player.ServerStrike(victim, damage, Outward(d), power, type);
         }
 
         foreach (var mob in FindObjectsByType<Mob>())
@@ -539,7 +651,7 @@ public class PlayerAbilities : NetworkBehaviour
             Vector3 d = mob.transform.position - center;
             d.y = 0f;
             if (d.magnitude > radius) continue;
-            mob.ServerHit(Outward(d), power, ScaleDamage(damage));
+            mob.ServerHit(Outward(d), power, player.ComputeOutgoingDamage(damage, type), type);
         }
 
         var bag = PunchingBag.Instance;
@@ -610,6 +722,79 @@ public class PlayerAbilities : NetworkBehaviour
         fx.Bolt(from, to, new Color(1f, 0.95f, 0.45f));
         fx.Burst(to, new Color(1f, 0.95f, 0.5f), 26, 7f, 0.15f);
         Shake(0.2f);
+    }
+
+    // Two red beams from the eyes (with a glow on each eye) for as long as the lasers run, drawn on every machine.
+    // They stop at the first thing in the way.
+    void UpdateLaserVisuals()
+    {
+        bool on = IsSpawned && lasers.Value;
+        if (!on)
+        {
+            if (laserBeams != null && laserBeams[0].gameObject.activeSelf)
+                for (int i = 0; i < 2; i++) { laserBeams[i].gameObject.SetActive(false); laserGlows[i].gameObject.SetActive(false); }
+            return;
+        }
+
+        if (laserBeams == null && !BuildLaserVisuals()) return;
+
+        Vector3 forward = transform.forward;
+        forward.y = 0f;
+        forward = forward.sqrMagnitude > 0.001f ? forward.normalized : Vector3.forward;
+        float flicker = 1f + 0.25f * Mathf.Sin(Time.time * 45f);
+
+        for (int i = 0; i < 2; i++)
+        {
+            Vector3 origin = laserEyes[i] != null
+                ? laserEyes[i].position + forward * 0.16f
+                : transform.position + Vector3.up * 1.22f + transform.right * (i == 0 ? -0.2f : 0.2f) + forward * 0.55f;
+
+            float length = AbilityCatalog.LaserRange;
+            var hits = Physics.RaycastAll(origin, forward, length, ~0, QueryTriggerInteraction.Ignore);
+            foreach (var hit in hits)
+            {
+                if (hit.collider.transform.IsChildOf(transform)) continue;
+                length = Mathf.Min(length, hit.distance);
+            }
+
+            laserBeams[i].gameObject.SetActive(true);
+            laserBeams[i].SetPositionAndRotation(origin + forward * (length * 0.5f), Quaternion.LookRotation(forward) * Quaternion.Euler(90f, 0f, 0f));
+            laserBeams[i].localScale = new Vector3(0.1f * flicker, length * 0.5f, 0.1f * flicker);
+
+            laserGlows[i].gameObject.SetActive(true);
+            laserGlows[i].position = origin;
+            laserGlows[i].localScale = Vector3.one * 0.22f * flicker;
+        }
+    }
+
+    bool BuildLaserVisuals()
+    {
+        var fx = HitEffects.Instance;
+        if (fx == null) return false;
+
+        laserMaterial = new Material(fx.SparkMaterial);
+        laserMaterial.SetColor("_BaseColor", new Color(1f, 0.12f, 0.2f));
+
+        laserBeams = new Transform[2];
+        laserGlows = new Transform[2];
+        laserEyes = new[] { transform.Find("Model/Body/EyeL"), transform.Find("Model/Body/EyeR") };
+        for (int i = 0; i < 2; i++)
+        {
+            laserBeams[i] = MakeLaserPart(PrimitiveType.Cylinder, "LaserBeam");
+            laserGlows[i] = MakeLaserPart(PrimitiveType.Sphere, "LaserGlow");
+        }
+        return true;
+    }
+
+    Transform MakeLaserPart(PrimitiveType type, string partName)
+    {
+        var part = GameObject.CreatePrimitive(type);
+        part.name = partName;
+        Destroy(part.GetComponent<Collider>());
+        part.GetComponent<Renderer>().sharedMaterial = laserMaterial;
+        part.GetComponent<Renderer>().shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        part.SetActive(false);
+        return part.transform;
     }
 
     void Shake(float amount)

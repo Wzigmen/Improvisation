@@ -21,7 +21,7 @@ public class FittingRoom : MonoBehaviour
     [SerializeField] Vector2 doorHalfSize;     // ...and its half size: anybody in there makes the curtain open
     [SerializeField] Vector2 insideCenter;     // world X/Z of the inside of the booth, from just behind the curtain...
     [SerializeField] Vector2 insideHalfSize;   // ...to the back wall: stepping in here at once starts the fitting
-    [SerializeField] float fov = 50f;
+    [SerializeField] float fov = 58f;   // the character is taller now (round body on legs, top hats), so a wider view
 
     // interface
     GameObject canvasRoot;

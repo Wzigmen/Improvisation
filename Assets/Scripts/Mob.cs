@@ -113,8 +113,8 @@ public class Mob : NetworkBehaviour
         retargetTimer = 8f;
     }
 
-    // Called on the host when a player's punch lands.
-    public void ServerHit(Vector3 direction, float power, int damage)
+    // Called on the host when a player's punch or ability lands.
+    public void ServerHit(Vector3 direction, float power, int damage, DamageType type = DamageType.Physical)
     {
         if (dead) return;
 
@@ -126,7 +126,7 @@ public class Mob : NetworkBehaviour
         knockback = d * (7f * power);
         stunTimer = 0.5f;
         verticalVelocity = 4f;
-        HitReactionRpc(d, power);
+        HitReactionRpc(d, power, (byte)type);
 
         if (health <= 0)
         {
@@ -146,7 +146,7 @@ public class Mob : NetworkBehaviour
     // ---- everyone: reactions ------------------------------------------------------------------
 
     [Rpc(SendTo.Everyone)]
-    void HitReactionRpc(Vector3 direction, float power)
+    void HitReactionRpc(Vector3 direction, float power, byte type)
     {
         hitStartTime = Time.time;
         hitDirection = direction;
@@ -155,7 +155,9 @@ public class Mob : NetworkBehaviour
         var fx = HitEffects.Instance;
         if (fx == null) return;
         Vector3 point = transform.position + Vector3.up * 0.5f;
-        fx.Burst(point, new Color(0.5f, 1f, 0.5f), Mathf.RoundToInt(10 * power), 4f * power);
+        // Physical hits spark green (like a squish), magical ones violet - the same split as on a player.
+        Color color = (DamageType)type == DamageType.Magical ? new Color(0.7f, 0.5f, 1f) : new Color(0.5f, 1f, 0.5f);
+        fx.Burst(point, color, Mathf.RoundToInt(10 * power), 4f * power);
     }
 
     [Rpc(SendTo.Everyone)]

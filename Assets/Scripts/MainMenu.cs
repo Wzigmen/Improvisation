@@ -62,6 +62,13 @@ public class MainMenu : MonoBehaviour
     {
         if (!NetworkGame.InGame)
         {
+            // Settings sits on top of everything else in the menu; Esc just closes it.
+            if (SettingsMenu.Instance != null && SettingsMenu.Instance.IsOpen)
+            {
+                if (Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame) SettingsMenu.Instance.Close();
+                return;
+            }
+
             // The nickname dialog takes all the keys: Enter confirms, Esc cancels.
             if (nickDialog.activeSelf)
             {
@@ -192,6 +199,11 @@ public class MainMenu : MonoBehaviour
 #else
         Application.Quit();
 #endif
+    }
+
+    void OpenSettings()
+    {
+        if (SettingsMenu.Instance != null) SettingsMenu.Instance.Open();
     }
 
     // ---- nickname ---------------------------------------------------------------------------
@@ -371,6 +383,7 @@ public class MainMenu : MonoBehaviour
         UIKit.AddButton(mainPanel, "Играть одному", UIKit.Green, PlaySolo);
         UIKit.AddButton(mainPanel, "Создать игру по сети", UIKit.Blue, HostGame);
         UIKit.AddButton(mainPanel, "Подключиться по сети", UIKit.Blue, ShowJoin);
+        UIKit.AddButton(mainPanel, "Настройки", UIKit.Gray, OpenSettings);
         UIKit.AddButton(mainPanel, "Выйти", UIKit.Red, Quit);
         mainMessage = UIKit.AddLabel(mainPanel, "", 26, FontStyle.Normal, new Color(1f, 0.85f, 0.5f), 90f);
 

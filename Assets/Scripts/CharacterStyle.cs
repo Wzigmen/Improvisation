@@ -13,12 +13,12 @@ public static class CharacterStyleCatalog
 
     public static readonly string[][] OptionNames =
     {
-        new[] { "Без головного убора", "Кепка", "Цилиндр", "Корона", "Ирокез", "Шапка-бини" },
-        new[] { "Злые", "Добрые", "Тёмные очки", "Прищур", "Большие", "Красные" },
+        new[] { "Хохолки", "Кепка", "Цилиндр", "Корона", "Ирокез", "Шапка-бини" },
+        new[] { "Сонные", "Добрые", "Тёмные очки", "Прищур", "Большие", "Красные" },
         new[] { "Ухмылка", "Улыбка", "Удивлённый", "Зубастый", "Усы", "Язык" },
-        new[] { "Обычные", "Белые перчатки", "Боксёрские перчатки", "Золотые", "Чёрные", "Шипастые" },
-        new[] { "Без одежды", "Красная футболка", "Синяя толстовка", "Тельняшка", "Плащ героя", "Бабочка" },
-        new[] { "Обычные ботинки", "Кроссовки", "Ролики", "Ласты", "Клоунские туфли", "Крылатые ботинки" }
+        new[] { "Белые перчатки", "Голые руки", "Боксёрские перчатки", "Золотые", "Чёрные", "Шипастые" },
+        new[] { "Без одежды", "Жёлтая футболка", "Синяя толстовка", "Тельняшка", "Плащ героя", "Бабочка" },
+        new[] { "Белые ботинки", "Красные кроссовки", "Ролики", "Ласты", "Клоунские туфли", "Крылатые ботинки" }
     };
 
     // A little colour chip next to every option in the menu.
@@ -27,9 +27,9 @@ public static class CharacterStyleCatalog
         new[] { new Color(0.5f, 0.5f, 0.55f), new Color(0.9f, 0.2f, 0.2f), new Color(0.15f, 0.15f, 0.18f), new Color(1f, 0.8f, 0.2f), new Color(0.3f, 0.9f, 0.4f), new Color(0.3f, 0.5f, 0.95f) },
         new[] { new Color(0.9f, 0.3f, 0.25f), new Color(0.4f, 0.75f, 1f), new Color(0.1f, 0.1f, 0.12f), new Color(0.75f, 0.75f, 0.8f), new Color(1f, 1f, 1f), new Color(1f, 0.1f, 0.1f) },
         new[] { new Color(0.85f, 0.85f, 0.9f), new Color(1f, 0.8f, 0.3f), new Color(1f, 0.5f, 0.5f), new Color(1f, 1f, 1f), new Color(0.45f, 0.28f, 0.15f), new Color(1f, 0.45f, 0.6f) },
-        new[] { new Color(1f, 0.55f, 0.2f), new Color(1f, 1f, 1f), new Color(0.9f, 0.15f, 0.15f), new Color(1f, 0.8f, 0.2f), new Color(0.12f, 0.12f, 0.14f), new Color(0.65f, 0.68f, 0.75f) },
-        new[] { new Color(0.5f, 0.5f, 0.55f), new Color(0.9f, 0.2f, 0.2f), new Color(0.2f, 0.4f, 0.9f), new Color(0.9f, 0.9f, 1f), new Color(0.85f, 0.15f, 0.15f), new Color(0.9f, 0.3f, 0.5f) },
-        new[] { new Color(0.55f, 0.25f, 0.1f), new Color(1f, 1f, 1f), new Color(0.2f, 0.4f, 0.9f), new Color(0.2f, 0.75f, 0.4f), new Color(0.9f, 0.15f, 0.15f), new Color(1f, 0.8f, 0.25f) }
+        new[] { new Color(1f, 1f, 1f), new Color(0.93f, 0.76f, 0.6f), new Color(0.9f, 0.15f, 0.15f), new Color(1f, 0.8f, 0.2f), new Color(0.12f, 0.12f, 0.14f), new Color(0.65f, 0.68f, 0.75f) },
+        new[] { new Color(0.5f, 0.5f, 0.55f), new Color(1f, 0.8f, 0.15f), new Color(0.2f, 0.4f, 0.9f), new Color(0.9f, 0.9f, 1f), new Color(0.5f, 0.2f, 0.8f), new Color(0.2f, 0.4f, 0.9f) },
+        new[] { new Color(0.96f, 0.96f, 0.98f), new Color(0.9f, 0.15f, 0.15f), new Color(0.2f, 0.4f, 0.9f), new Color(0.2f, 0.75f, 0.4f), new Color(1f, 0.85f, 0.2f), new Color(1f, 0.8f, 0.25f) }
     };
 
     public static int OptionCount(int slot) => OptionNames[slot].Length;
@@ -111,13 +111,13 @@ public class CharacterStyle : MonoBehaviour
     }
 
     PlayerController player;
-    Transform model, body, footL, footR, handL, handR, legL, legR;
+    Transform model, body, footL, footR, handL, handR, legL, legR, armL, armR;
     Renderer handRendererL, handRendererR, footRendererL, footRendererR;
     Renderer pupilRendererL, pupilRendererR;
-    Transform eyeL, eyeR, pupilL, pupilR, browL, browR;
-    Transform[] smirk;
+    Transform eyeL, eyeR, pupilL, pupilR, lidL, lidR, cuffL, cuffR;
+    Transform[] smirk, hair;
     readonly List<Saved> saved = new List<Saved>();
-    Color footDefault = new Color(0.55f, 0.25f, 0.1f);
+    Color footDefault = new Color(0.96f, 0.96f, 0.98f);
     Color pupilDefault = new Color(0.05f, 0.05f, 0.05f);
 
     readonly List<GameObject> spawned = new List<GameObject>();
@@ -142,9 +142,21 @@ public class CharacterStyle : MonoBehaviour
         eyeR = Remember(body, "EyeR");
         pupilL = Remember(body, "PupilL");
         pupilR = Remember(body, "PupilR");
-        browL = Remember(body, "BrowL");
-        browR = Remember(body, "BrowR");
+        lidL = Remember(body, "LidL");
+        lidR = Remember(body, "LidR");
+        cuffL = Remember(handL, "GloveCuff");
+        cuffR = Remember(handR, "GloveCuff");
+        armL = model.Find("ArmL");
+        armR = model.Find("ArmR");
         smirk = new[] { Remember(body, "SmirkA"), Remember(body, "SmirkB"), Remember(body, "SmirkC"), Remember(body, "SmirkDimple") };
+        var curls = new List<Transform>();
+        foreach (string side in new[] { "L", "R" })
+            for (int i = 1; i <= 4; i++)
+            {
+                Transform curl = Remember(body, "Hair" + side + i);
+                if (curl != null) curls.Add(curl);
+            }
+        hair = curls.ToArray();
         Remember(footL, null);
         Remember(footR, null);
 
@@ -237,12 +249,12 @@ public class CharacterStyle : MonoBehaviour
         int hands = CharacterStyleCatalog.Get(applied == uint.MaxValue ? 0u : applied, CharacterStyleCatalog.Hands);
         Color handColor = hands switch
         {
-            1 => Color.white,
+            1 => new Color(0.93f, 0.76f, 0.6f),   // bare hands: the same skin as the arms
             2 => new Color(0.9f, 0.12f, 0.12f),
             3 => new Color(1f, 0.78f, 0.2f),
             4 => new Color(0.1f, 0.1f, 0.12f),
             5 => new Color(0.6f, 0.63f, 0.7f),
-            _ => PlayerAppearance.ColorFor(player.ColorId)
+            _ => new Color(0.97f, 0.97f, 1f)      // the default: white gloves
         };
         SetColor(handRendererL, handColor);
         SetColor(handRendererR, handColor);
@@ -250,10 +262,10 @@ public class CharacterStyle : MonoBehaviour
         int legs = CharacterStyleCatalog.Get(applied == uint.MaxValue ? 0u : applied, CharacterStyleCatalog.Legs);
         Color footColor = legs switch
         {
-            1 => Color.white,
+            1 => new Color(0.9f, 0.15f, 0.15f),
             2 => new Color(0.2f, 0.4f, 0.9f),
             3 => new Color(0.2f, 0.75f, 0.4f),
-            4 => new Color(0.9f, 0.15f, 0.15f),
+            4 => new Color(1f, 0.85f, 0.2f),
             5 => new Color(1f, 0.78f, 0.25f),
             _ => footDefault
         };
@@ -276,6 +288,10 @@ public class CharacterStyle : MonoBehaviour
     void BuildHead(int option)
     {
         Quaternion none = Quaternion.identity;
+
+        // The two curls of hair only show with a bare head (option 0) and the mohawk replaces them.
+        foreach (var curl in hair) SetActive(curl, option == 0);
+
         switch (option)
         {
             case 1: // red baseball cap
@@ -337,9 +353,10 @@ public class CharacterStyle : MonoBehaviour
     void BuildEyes(int option)
     {
         Quaternion none = Quaternion.identity;
-        bool browsVisible = option != 1 && option != 4;
-        SetActive(browL, browsVisible);
-        SetActive(browR, browsVisible);
+        // The heavy eyelids belong to the sleepy default eyes and the red ones; the other looks need open eyes.
+        bool lidsVisible = option == 0 || option == 5;
+        SetActive(lidL, lidsVisible);
+        SetActive(lidR, lidsVisible);
 
         switch (option)
         {
@@ -447,7 +464,12 @@ public class CharacterStyle : MonoBehaviour
 
     void BuildHands(int option)
     {
-        if (option == 0) return;
+        if (option == 0) return;   // the white gloves and their cuffs are part of the prefab
+
+        // Everything else replaces the white cuffs (or, for bare hands, just takes them off).
+        SetActive(cuffL, false);
+        SetActive(cuffR, false);
+        if (option == 1) return;
 
         foreach (float side in new[] { -1f, 1f })
         {
@@ -457,7 +479,6 @@ public class CharacterStyle : MonoBehaviour
             // a cuff on the wrist (the hand is a ball of radius 0.5 in its own scale)
             Color cuffColor = option switch
             {
-                1 => new Color(0.95f, 0.95f, 1f),
                 2 => new Color(1f, 1f, 1f),
                 3 => new Color(1f, 0.78f, 0.2f),
                 4 => new Color(0.9f, 0.15f, 0.15f),
@@ -491,13 +512,18 @@ public class CharacterStyle : MonoBehaviour
         Quaternion none = Quaternion.identity;
         switch (option)
         {
-            case 1: // red T-shirt: covers the back up to the shoulders and the belly under the mouth
-                Shell("Shirt", 0f, Mathf.PI * 2f, 118f * Deg, 58f * Deg, 160f * Deg, 0f, 1f, 0.025f, Mat(0.9f, 0.15f, 0.15f));
+            case 1: // yellow T-shirt (a red one would vanish on the red body): covers the back up to the shoulders and the belly, short sleeves
+            {
+                Material yellow = Mat(1f, 0.8f, 0.15f);
+                Shell("Shirt", 0f, Mathf.PI * 2f, 118f * Deg, 58f * Deg, 160f * Deg, 0f, 1f, 0.025f, yellow);
+                Sleeves(yellow, 0.3f);
                 break;
-            case 2: // blue hoodie with a hood and a pocket
+            }
+            case 2: // blue hoodie with a hood and a pocket, and long sleeves
             {
                 Material blue = Mat(0.2f, 0.4f, 0.9f);
                 Shell("Hoodie", 0f, Mathf.PI * 2f, 112f * Deg, 52f * Deg, 160f * Deg, 0f, 1f, 0.03f, blue);
+                Sleeves(blue, 0.8f);
                 Part(Sphere(), "Hood", body, new Vector3(0f, 1.0f, -0.5f), new Vector3(0.62f, 0.5f, 0.42f), blue, Quaternion.Euler(-15f, 0f, 0f));
                 Part(Sphere(), "Pocket", body, OnFaceLow(0f, 0.34f, 0.035f), new Vector3(0.44f, 0.15f, 0.06f), Mat(0.15f, 0.3f, 0.75f), Quaternion.Euler(-8f, 0f, 0f));
                 break;
@@ -509,11 +535,12 @@ public class CharacterStyle : MonoBehaviour
                 const int stripes = 6;
                 for (int i = 0; i < stripes; i++)
                     Shell("Stripe", 0f, Mathf.PI * 2f, 118f * Deg, 58f * Deg, 160f * Deg, i / (float)stripes, (i + 1) / (float)stripes, 0.025f, i % 2 == 0 ? white : stripe);
+                Sleeves(stripe, 0.3f);
                 break;
             }
             case 4: // hero's cape: only the back half, hanging over the shoulders
             {
-                Material cape = Mat(0.85f, 0.12f, 0.2f);
+                Material cape = Mat(0.5f, 0.2f, 0.8f);
                 Shell("Cape", Mathf.PI * 0.55f, Mathf.PI * 1.45f, 40f * Deg, 40f * Deg, 150f * Deg, 0f, 1f, 0.07f, cape);
                 // gold clasps where the cape meets the sides of the body
                 Part(Sphere(), "CapeClaspL", body, new Vector3(-0.56f, 0.86f, 0.32f), Vector3.one * 0.12f, Mat(1f, 0.78f, 0.2f, 0.85f, 0.7f), none);
@@ -522,13 +549,24 @@ public class CharacterStyle : MonoBehaviour
             }
             case 5: // bow tie
             {
-                Material red = Mat(0.85f, 0.12f, 0.25f);
+                Material red = Mat(0.2f, 0.4f, 0.9f);   // blue, so it shows on the red body
                 Vector3 knot = OnFaceLow(0f, 0.42f, 0.03f);
-                Part(Sphere(), "BowKnot", body, knot, Vector3.one * 0.075f, Mat(0.6f, 0.05f, 0.15f), none);
+                Part(Sphere(), "BowKnot", body, knot, Vector3.one * 0.075f, Mat(0.1f, 0.2f, 0.6f), none);
                 Part(Sphere(), "BowL", body, knot + new Vector3(-0.1f, 0f, -0.015f), new Vector3(0.15f, 0.11f, 0.06f), red, Quaternion.Euler(0f, 0f, 22f));
                 Part(Sphere(), "BowR", body, knot + new Vector3(0.1f, 0f, -0.015f), new Vector3(0.15f, 0.11f, 0.06f), red, Quaternion.Euler(0f, 0f, -22f));
                 break;
             }
+        }
+    }
+
+    // Sleeves: a wider tube around the top part of each arm (`fraction` of the arm, from the shoulder). The arm is
+    // stretched by LimbLinker, so the sleeve, being its child, grows and shrinks with it.
+    void Sleeves(Material material, float fraction)
+    {
+        foreach (Transform arm in new[] { armL, armR })
+        {
+            if (arm == null) continue;
+            Part(Cylinder(), "Sleeve", arm, new Vector3(0f, -1f + fraction, 0f), new Vector3(1.9f, fraction, 1.9f), material, Quaternion.identity);
         }
     }
 
@@ -546,29 +584,29 @@ public class CharacterStyle : MonoBehaviour
 
             switch (option)
             {
-                case 1: // sneakers: white, a red stripe on top and a chunky sole
-                    Part(Sphere(), "Stripe", leg, new Vector3(0f, 0.115f, 0.04f), new Vector3(0.3f, 0.06f, 0.24f), Mat(0.9f, 0.15f, 0.15f), none);
-                    Part(Sphere(), "Sole", leg, new Vector3(0f, -0.105f, 0.03f), new Vector3(0.42f, 0.05f, 0.58f), Mat(0.8f, 0.85f, 0.95f), none);
+                case 1: // red sneakers: a white stripe on top and a chunky white sole
+                    Part(Sphere(), "Stripe", leg, new Vector3(0f, 0.13f, 0.06f), new Vector3(0.3f, 0.06f, 0.26f), Mat(1f, 1f, 1f), none);
+                    Part(Sphere(), "Sole", leg, new Vector3(0f, -0.135f, 0.04f), new Vector3(0.44f, 0.06f, 0.64f), Mat(0.95f, 0.95f, 1f), none);
                     break;
                 case 2: // roller skates: four wheels under every boot
                 {
                     Material wheel = Mat(1f, 0.85f, 0.2f);
                     foreach (float x in new[] { -0.09f, 0.09f })
                         foreach (float z in new[] { -0.17f, 0.2f })
-                            Part(Sphere(), "Wheel", leg, new Vector3(x, -0.075f, z), Vector3.one * 0.11f, wheel, none);
+                            Part(Sphere(), "Wheel", leg, new Vector3(x, -0.13f, z), Vector3.one * 0.11f, wheel, none);
                     break;
                 }
                 case 3: // flippers: long, wide, flat
-                    foot.localScale = new Vector3(0.62f, 0.14f, 0.95f);
+                    foot.localScale = new Vector3(0.62f, 0.16f, 0.95f);
                     break;
                 case 4: // clown shoes: huge, polka dots and a pompom on the toe
                 {
-                    foot.localScale = new Vector3(0.5f, 0.3f, 0.95f);
-                    Material dot = Mat(1f, 1f, 1f);
-                    Part(Sphere(), "Dot", leg, new Vector3(-0.11f, 0.12f, 0.12f), Vector3.one * 0.09f, dot, none);
-                    Part(Sphere(), "Dot", leg, new Vector3(0.12f, 0.12f, -0.06f), Vector3.one * 0.09f, dot, none);
-                    Part(Sphere(), "Dot", leg, new Vector3(0.02f, 0.13f, 0.3f), Vector3.one * 0.08f, dot, none);
-                    Part(Sphere(), "Pompom", leg, new Vector3(0f, 0.06f, 0.5f), Vector3.one * 0.15f, Mat(1f, 0.9f, 0.2f), none);
+                    foot.localScale = new Vector3(0.5f, 0.32f, 0.95f);
+                    Material dot = Mat(0.9f, 0.15f, 0.15f);
+                    Part(Sphere(), "Dot", leg, new Vector3(-0.11f, 0.14f, 0.12f), Vector3.one * 0.09f, dot, none);
+                    Part(Sphere(), "Dot", leg, new Vector3(0.12f, 0.14f, -0.06f), Vector3.one * 0.09f, dot, none);
+                    Part(Sphere(), "Dot", leg, new Vector3(0.02f, 0.15f, 0.3f), Vector3.one * 0.08f, dot, none);
+                    Part(Sphere(), "Pompom", leg, new Vector3(0f, 0.06f, 0.5f), Vector3.one * 0.15f, Mat(0.9f, 0.15f, 0.15f), none);
                     break;
                 }
                 case 5: // winged boots: little wings on the ankles that flap

@@ -14,11 +14,12 @@ public class CartoonWalker : MonoBehaviour
     [SerializeField] Transform rightHand;
 
     [Header("Walk")]
-    [SerializeField] float stepsPerSecond = 2.4f;
-    [SerializeField] float stepLength = 0.35f;
-    [SerializeField] float stepHeight = 0.18f;
-    [SerializeField] float handSwing = 0.3f;
-    [SerializeField] float bobHeight = 0.07f;
+    [SerializeField] float stepsPerSecond = 2.9f;   // short legs: quick little steps
+    [SerializeField] float stepLength = 0.27f;
+    [SerializeField] float stepHeight = 0.13f;
+    [SerializeField] float handSwing = 0.32f;
+    [SerializeField] float bobHeight = 0.06f;
+    [SerializeField] float waddle = 5f;             // degrees of side-to-side roll with every step
 
     [Header("Sprint")]
     [SerializeField] float sprintStepRate = 0.7f;
@@ -28,7 +29,7 @@ public class CartoonWalker : MonoBehaviour
     [Header("Air")]
     [SerializeField] float landingSquashTime = 0.18f;
     [SerializeField] float landingSquash = 0.22f;
-    [SerializeField] Vector3 flipCenter = new Vector3(0f, 0.75f, 0f); // somersault pivots around the body's middle
+    [SerializeField] Vector3 flipCenter = new Vector3(0f, 0.95f, 0f); // somersault pivots around the body's middle
 
     [Header("Punch")]
     [SerializeField] Vector3 punchWindup = new Vector3(0.13f, -0.05f, -0.35f);  // hand offset while winding up (right hand)
@@ -46,6 +47,12 @@ public class CartoonWalker : MonoBehaviour
 
     Transform model;
     Vector3 modelPos, bodyPos, bodyScale, leftFootPos, rightFootPos, leftHandPos, rightHandPos, handScale;
+
+    // Blinking: the heavy eyelids drop over the eyes now and then.
+    Transform lidL, lidR;
+    Vector3 lidLPos, lidRPos, lidLScale, lidRScale;
+    float nextBlink = 2f;
+    float blinkTime = -1f;
     float phase;
     float air;          // 0..1 blend into the airborne pose
     float tuck;         // 0..1 blend into the curled-up somersault pose
@@ -69,6 +76,12 @@ public class CartoonWalker : MonoBehaviour
         leftHandPos = leftHand.localPosition;
         rightHandPos = rightHand.localPosition;
         handScale = rightHand.localScale;
+
+        lidL = body.Find("LidL");
+        lidR = body.Find("LidR");
+        if (lidL != null) { lidLPos = lidL.localPosition; lidLScale = lidL.localScale; }
+        if (lidR != null) { lidRPos = lidR.localPosition; lidRScale = lidR.localScale; }
+        nextBlink = Random.Range(1.5f, 4f);
     }
 
     void Update()
@@ -146,14 +159,53 @@ public class CartoonWalker : MonoBehaviour
                         + 0.3f * dash; // stretched out along the direction of the dash
         body.localScale = new Vector3(bodyScale.x / Mathf.Sqrt(stretch), bodyScale.y * stretch, bodyScale.z / Mathf.Sqrt(stretch));
 
+        // Standing around: the character shifts its weight, glances left and right and rests its hands on its hips
+        // (that is the rest pose of the hands), tapping a foot every so often.
+        bool lasering = player.Abilities != null && player.Abilities.LasersActive;   // eyes must point straight ahead
+        float idle = (1f - walk) * (1f - air) * (1f - dash) * (1f - dance) * (1f - knockedOut) * (lasering ? 0f : 1f);
+        float idleRoll = Mathf.Sin(Time.time * 1.1f) * 2.5f * idle;
+        float idleYaw = Mathf.Sin(Time.time * 0.6f) * 7f * idle;
+        float tap = Mathf.Max(0f, Mathf.Sin(Time.time * 7f)) * Mathf.Max(0f, Mathf.Sin(Time.time * 0.45f) - 0.55f) * 2.2f;
+        rightFoot.localPosition += new Vector3(0f, tap * 0.07f * idle, 0f);
+        rightHand.localPosition += new Vector3(0f, breath * 0.6f, 0f);
+        leftHand.localPosition += new Vector3(0f, breath * 0.6f, 0f);
+        UpdateBlink(dt);
+
         // Lean into the walking direction (more when sprinting) and the punch; tip away from a hit.
-        Quaternion lean = Quaternion.Euler(walk * (6f + sprint * sprintLean) + punchLean, 0f, s * 3f * walk);
+        Quaternion lean = Quaternion.Euler(walk * (6f + sprint * sprintLean) + punchLean, idleYaw, s * waddle * walk + idleRoll);
         float hitTilt = hitAmount * (0.6f + 0.4f * hitWobble) * hitLean;
         body.localRotation = lean * Quaternion.Euler(hitLocal.z * hitTilt, 0f, -hitLocal.x * hitTilt)
                                   * Quaternion.Euler(0f, 0f, dSin * 16f * dance);
 
         torsoYaw += Mathf.Sin(dancePhase * 0.5f) * 55f * dance; // the dancer twirls back and forth
         UpdateModelRotation(flipping, torsoYaw, dt);
+    }
+
+    // Every few seconds the eyelids slide down over the eyes and back up again.
+    void UpdateBlink(float dt)
+    {
+        if (lidL == null || lidR == null) return;
+
+        nextBlink -= dt;
+        if (nextBlink <= 0f)
+        {
+            blinkTime = 0f;
+            nextBlink = Random.Range(2f, 5.5f);
+        }
+
+        float closed = 0f;
+        if (blinkTime >= 0f)
+        {
+            blinkTime += dt;
+            const float duration = 0.22f;
+            closed = Mathf.Sin(Mathf.Clamp01(blinkTime / duration) * Mathf.PI);
+            if (blinkTime >= duration) blinkTime = -1f;
+        }
+
+        lidL.localPosition = lidLPos + Vector3.down * (0.1f * closed);
+        lidR.localPosition = lidRPos + Vector3.down * (0.1f * closed);
+        lidL.localScale = new Vector3(lidLScale.x, lidLScale.y * (1f + 0.9f * closed), lidLScale.z);
+        lidR.localScale = new Vector3(lidRScale.x, lidRScale.y * (1f + 0.9f * closed), lidRScale.z);
     }
 
     // Wind-up -> fast strike -> hold -> recover, as a pose for whichever hand is punching.

@@ -18,7 +18,8 @@ public class PauseMenu : MonoBehaviour
     // belongs to that screen, so no punches, dashes or cards are fired.
     public static bool AbilityPanelOpen;
     public static bool CustomizerOpen;
-    public static bool PanelOpen => AbilityPanelOpen || CustomizerOpen;
+    public static bool AdminOpen;   // the admin panel (Ё)
+    public static bool PanelOpen => AbilityPanelOpen || CustomizerOpen || AdminOpen;
 
     GameObject menuRoot;
     Button resumeButton;
@@ -87,8 +88,15 @@ public class PauseMenu : MonoBehaviour
     void OnPausePressed(InputAction.CallbackContext ctx)
     {
         if (!NetworkGame.InGame) return;
+        // Settings sits on top of the pause menu; Esc just closes it and leaves the pause menu open underneath.
+        if (SettingsMenu.Instance != null && SettingsMenu.Instance.IsOpen) { SettingsMenu.Instance.Close(); return; }
         if (IsPaused) Resume();
         else Pause();
+    }
+
+    void OpenSettings()
+    {
+        if (SettingsMenu.Instance != null) SettingsMenu.Instance.Open();
     }
 
     void Pause()
@@ -163,6 +171,7 @@ public class PauseMenu : MonoBehaviour
         endMatchButton = UIKit.AddButton(panel, "Завершить бой", new Color(0.85f, 0.55f, 0.2f), EndMatch);
         endMatchButton.gameObject.SetActive(false); // only shown to the host during a match
         UIKit.AddButton(panel, "В главное меню", UIKit.Blue, ToMainMenu);
+        UIKit.AddButton(panel, "Настройки", UIKit.Gray, OpenSettings);
         UIKit.AddButton(panel, "Выйти из игры", UIKit.Red, Quit);
     }
 }

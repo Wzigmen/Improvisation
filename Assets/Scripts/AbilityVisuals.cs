@@ -37,7 +37,7 @@ public class AbilityVisuals : MonoBehaviour
     // White-blue speed sparks left hanging in the air behind a dashing character.
     ParticleSystem BuildDashTrail()
     {
-        var ps = NewAura("DashTrail", new Vector3(0f, 0.7f, 0f), Quaternion.identity,
+        var ps = NewAura("DashTrail", new Vector3(0f, 1.0f, 0f), Quaternion.identity,
             ParticleSystemSimulationSpace.World, 0.25f, 0.45f, 0.1f, 0.26f,
             new Color(0.6f, 0.9f, 1f), Color.white, 400f);
 
@@ -68,7 +68,7 @@ public class AbilityVisuals : MonoBehaviour
     // A sparkling bubble of light hugging the character.
     ParticleSystem BuildShield()
     {
-        var ps = NewAura("ShieldSparkles", new Vector3(0f, 0.9f, 0f), Quaternion.identity,
+        var ps = NewAura("ShieldSparkles", new Vector3(0f, 1.2f, 0f), Quaternion.identity,
             ParticleSystemSimulationSpace.Local, 0.5f, 0.8f, 0.13f, 0.24f,
             new Color(0.35f, 0.85f, 1f), Color.white, 200f);
 
